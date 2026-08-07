@@ -502,6 +502,15 @@ and any leading drawers, up to the first child heading -- while empty
 BODY leaves it untouched; clearing is only via CLEAR-BODY."
   (with-current-buffer (find-file-noselect (ecl-org--file file))
     (org-with-wide-buffer
+     ;; Validate inputs before touching the tree, so a bad flag cannot
+     ;; leave a half-created heading behind in the buffer.
+     (when todo
+       (unless (member todo (append org-not-done-keywords org-done-keywords))
+         (error "Unknown TODO state %S; file defines: %s" todo
+                (string-join (append org-not-done-keywords org-done-keywords) " "))))
+     (dolist (kv properties)
+       (unless (string-search "=" kv)
+         (error "--property needs K=V, got %S" kv)))
      (let ((n (length segments)) (i 0) (prefix nil) (created nil) pos)
        (while (< i n)
          (let* ((seg (nth i segments))
@@ -517,9 +526,6 @@ BODY leaves it untouched; clearing is only via CLEAR-BODY."
            (setq prefix path i (1+ i))))
        (goto-char pos)
        (when todo
-         (unless (member todo (append org-not-done-keywords org-done-keywords))
-           (error "Unknown TODO state %S; file defines: %s" todo
-                  (string-join (append org-not-done-keywords org-done-keywords) " ")))
          (let ((org-inhibit-logging t))
            (org-todo todo)))
        (when tags

@@ -198,6 +198,16 @@ Loose note.
                    "created Archive > 2026 > Q3"))
     (should (ecl-org-section f '("Archive" "2026" "Q3")))))
 
+(ert-deftest ecl-org-test-create-invalid-input-leaves-no-heading ()
+  "A create that fails validation must not leave a half-created heading."
+  (ecl-org-test--with-file f
+    (should-error (ecl-org-create f '("Projects" "Bogus task")
+                                  "NOSUCHSTATE" nil nil nil nil nil ""))
+    (should-error (ecl-org-create f '("Projects" "Bogus task")
+                                  nil nil nil '("no-equals-sign") nil nil ""))
+    ;; Neither on disk nor in the (still-open) buffer.
+    (should-error (ecl-org-section f '("Projects" "Bogus task")))))
+
 (ert-deftest ecl-org-test-create-missing-intermediate-errors ()
   (ecl-org-test--with-file f
     (let ((err (should-error
