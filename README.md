@@ -44,9 +44,23 @@ make check                # all three
 The e2e layer starts a throwaway daemon named `testing`; it never touches
 your live Emacs.
 
-## Install (nix)
+## Install
 
-`default.nix` builds `bin/ecl` plus the elisp under
-`share/emacs/site-lisp`. Consume a committed (tested) state via
-`builtins.fetchGit` pinned to a rev and add the site-lisp dir to
-`load-path`.
+**Elisp** (any system with Emacs 29+): straight from git via the
+built-in `:vc` keyword, pinned to a tested revision:
+
+```elisp
+(use-package ecl
+  :vc (:url "https://github.com/tino415/ecl" :rev "<sha>")
+  ...)
+```
+
+Releasing = green `make check`, commit, bump `:rev`. Note that a `:rev`
+change does not rebuild an already-installed package — run
+`M-x package-vc-rebuild` after updating the checkout, or delete
+`~/.emacs.d/elpa/ecl` and restart. Avoid `package-vc-upgrade`: it pulls
+HEAD past the pin.
+
+**Client** (`bin/ecl`) must be on PATH separately. On nix, `default.nix`
+builds it — consume via `builtins.fetchGit` pinned to the same rev.
+Elsewhere, symlink `~/.emacs.d/elpa/ecl/bin/ecl` into a PATH directory.

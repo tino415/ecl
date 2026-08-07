@@ -1,5 +1,10 @@
 ;;; ecl.el --- Allowlisted command tree for the ecl shell client -*- lexical-binding: t; -*-
 
+;; Author: Martin Cernak
+;; URL: https://github.com/tino415/ecl
+;; Version: 0.2.0
+;; Package-Requires: ((emacs "29.1"))
+
 ;;; Commentary:
 ;; ecl (the bin/ecl client of this package) lets shell callers --
 ;; primarily coding agents -- invoke a curated set of functions in this
