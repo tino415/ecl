@@ -1,0 +1,59 @@
+#!/usr/bin/env sh
+":"; exec emacs --script "$0" -- "$@" # -*- mode: emacs-lisp; lexical-binding: t; -*-
+;;; ecl --- call allowlisted functions in the running Emacs daemon.
+;; The sh trampoline above re-execs via `emacs --script` with a "--"
+;; guard so emacs cannot swallow user args like --help as its own.
+;; The reachable command tree (and per-command confirmation) lives in
+;; this package's ecl.el, loaded by the daemon; this client only
+;; forwards argv, stdin and the caller's cwd over `server-eval-at'
+;; and formats the reply.
+;; Stdin is read lazily: only when the daemon answers (ecl-need-stdin)
+;; -- i.e. the resolved command is flagged :stdin -- do we slurp it and
+;; re-dispatch.  Plain commands never block on an open stdin.
+;; Exit codes: 0 ok, 2 daemon unreachable or command error,
+;; 3 user denied in Emacs, 4 unknown command, 64 usage.
+
+(require 'server)
+(require 'seq)
+
+(when (equal (car argv) "--") (pop argv))
+
+(defun ecl-print (value)
+  (cond
+   ((null value))
+   ((stringp value) (princ value) (terpri))
+   ((and (proper-list-p value) (seq-every-p #'stringp value))
+    (dolist (s value) (princ s) (terpri)))
+   (t (prin1 value) (terpri))))
+
+(defun ecl-call (stdin)
+  (condition-case err
+      (server-eval-at (or (getenv "ECL_SERVER") "server")
+                      (list 'ecl-dispatch (list 'quote argv)
+                            stdin default-directory))
+    (error (list 'ecl-error 'connect (error-message-string err)))))
+
+(defun ecl-read-stdin ()
+  ;; Blocks until the pipe/heredoc closes -- same contract as `cat`.
+  (with-temp-buffer
+    (let ((coding-system-for-read 'utf-8-unix))
+      (call-process "cat" "/dev/stdin" t))
+    (buffer-string)))
+
+(let ((result (ecl-call nil)))
+  (when (equal result '(ecl-need-stdin))
+    (setq result (ecl-call (ecl-read-stdin))))
+  (pcase result
+    ;; Exit explicitly on success too: falling off the script would let
+    ;; emacs resume option processing on whatever is left in argv.
+    (`(ecl-ok ,value) (ecl-print value) (kill-emacs 0))
+    (`(ecl-help ,text) (princ text) (kill-emacs 0))
+    (`(ecl-error usage ,text) (message "%s" text) (kill-emacs 64))
+    (`(ecl-error denied ,msg) (message "ecl: %s" msg) (kill-emacs 3))
+    (`(ecl-error unknown ,msg) (message "ecl: %s" msg) (kill-emacs 4))
+    (`(ecl-error connect ,msg)
+     (message "ecl: cannot reach the Emacs daemon (%s)" msg)
+     (message "ecl: is the daemon up and ecl.el loaded? (require 'ecl)")
+     (kill-emacs 2))
+    (`(ecl-error ,_ ,msg) (message "ecl: %s" msg) (kill-emacs 2))
+    (other (message "ecl: unexpected reply: %S" other) (kill-emacs 2))))
