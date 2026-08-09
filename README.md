@@ -9,7 +9,7 @@ instead of raw `emacsclient --eval`.
 - `ecl.el` — framework: command tree (`ecl-commands`), dispatch, help,
   per-command y-or-n-p confirmation, stdin handshake.
 - `ecl-org.el` — org module: heading-addressed queries and edits
-  (`ecl org outline|section|append|replace|create|delete|rename|...`).
+  (`ecl org outline|section|append|replace|create|delete|rename|refile|...`).
   Headings are positional path segments; text edits are scoped to a
   section's content, structure has its own commands.
 

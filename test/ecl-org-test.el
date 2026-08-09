@@ -259,6 +259,52 @@ Loose note.
       (should (string-search "** TODO Ship v3" s))
       (should (string-search ":core:" s)))))
 
+;;; refile
+
+(ert-deftest ecl-org-test-refile-under-sibling ()
+  (ecl-org-test--with-file f
+    (should (equal (ecl-org-refile f '("Projects" "Ship v2") nil '("Notes"))
+                   "refiled Projects > Ship v2 -> Notes"))
+    (should-error (ecl-org-section f '("Projects" "Ship v2")))
+    (let ((o (ecl-org-outline f)))
+      (should (string-search "* Notes\n** Ship v2\n*** QA" o)))))
+
+(ert-deftest ecl-org-test-refile-to-top-level ()
+  (ecl-org-test--with-file f
+    (should (equal (ecl-org-refile f '("Projects" "Ship v2"))
+                   "refiled Projects > Ship v2 -> top level"))
+    (let ((o (ecl-org-outline f)))
+      (should (string-search "\n* Ship v2\n** QA" o)))
+    (should (ecl-org-section f '("Ship v2")))))
+
+(ert-deftest ecl-org-test-refile-cross-file ()
+  (ecl-org-test--with-file f
+    (ecl-org-test--with-file g
+      (ecl-org-refile f '("Projects" "Ship v2") g '("Notes"))
+      (should-error (ecl-org-section f '("Projects" "Ship v2")))
+      ;; Both buffers saved: check the files on disk.
+      (should-not (string-search "Ship v2" (ecl-org-test--file-string f)))
+      (should (string-search "** Ship v2" (ecl-org-test--file-string g))))))
+
+(ert-deftest ecl-org-test-refile-into-self-errors ()
+  (ecl-org-test--with-file f
+    (let ((before (ecl-org-test--file-string f)))
+      (should-error (ecl-org-refile f '("Projects") nil '("Projects" "Ship v2")))
+      (should (equal before (ecl-org-test--file-string f))))))
+
+(ert-deftest ecl-org-test-refile-missing-dest-errors ()
+  (ecl-org-test--with-file f
+    (let ((before (ecl-org-test--file-string f)))
+      (should-error (ecl-org-refile f '("Notes") nil '("Nowhere")))
+      (should (equal before (ecl-org-test--file-string f))))))
+
+(ert-deftest ecl-org-test-refile-logs-when-configured ()
+  (ecl-org-test--with-file f
+    (let ((org-log-refile 'time))
+      (ecl-org-refile f '("Projects" "Ship v2") nil '("Notes")))
+    (should (string-search "Refiled on"
+                           (ecl-org-section f '("Notes" "Ship v2"))))))
+
 ;;; status / note / effort / property
 
 (ert-deftest ecl-org-test-status-logs-timestamp ()

@@ -11,7 +11,7 @@
 ;; create body) are scoped to a section's CONTENT -- after the heading
 ;; line, property drawer included, up to the first child heading; the
 ;; tree structure is only reachable through its own commands (create,
-;; delete, rename, status).
+;; delete, rename, refile, status).
 ;;
 ;; Register the command group from your init file:
 ;;   (use-package ecl-org
@@ -23,6 +23,7 @@
 (require 'org)
 (require 'org-element)
 (require 'org-attach)
+(require 'org-refile)
 (require 'ecl)
 
 (defun ecl-org--file (file)
@@ -576,6 +577,69 @@ Stars, TODO keyword, priority and tags are preserved.  Returns TITLE."
      (save-buffer)
      title)))
 
+(defun ecl-org-refile (file segments &optional to-file to-segments)
+  "Move the subtree at SEGMENTS in FILE under TO-SEGMENTS; save.
+Delegates to `org-refile', so the subtree's level is adapted to the
+destination and `org-reverse-note-order' decides whether it lands as the
+first or last child.  TO-SEGMENTS nil refiles to the top level; TO-FILE,
+when given, is the destination file (default FILE), so moves may cross
+files.  Honors `org-log-refile' by driving Org's log note directly (the
+interactive post-command hook never fires under `emacsclient', same
+technique as `ecl-org-set-status').  Saves both buffers.  Returns a
+confirmation string."
+  (let* ((src (ecl-org--file file))
+         (dest-buf (find-file-noselect (if to-file (ecl-org--file to-file) src)))
+         (dest-pos
+          (when to-segments
+            (with-current-buffer dest-buf
+              (org-with-wide-buffer
+               (ecl-org--find-olp to-segments "; resolving --to destination")))))
+         new-loc)
+    (with-current-buffer (find-file-noselect src)
+      (org-with-wide-buffer
+       (goto-char (ecl-org--find-olp segments))
+       (let ((log org-log-refile)
+             ;; Refile with Org's own logging off: `org-add-log-setup'
+             ;; defers the entry via `post-command-hook', which never
+             ;; fires under `emacsclient'.  The hook below remembers
+             ;; where the subtree landed so we can log there ourselves.
+             (org-log-refile nil)
+             (org-after-refile-insert-hook
+              (cons (lambda () (setq new-loc (point-marker)))
+                    (ensure-list org-after-refile-insert-hook))))
+         (org-refile nil nil
+                     (list (if to-segments (string-join to-segments " > ")
+                             "top level")
+                           (buffer-file-name dest-buf) nil dest-pos))
+         (when (and log new-loc)
+           (with-current-buffer (marker-buffer new-loc)
+             (org-with-wide-buffer
+              (goto-char new-loc)
+              (org-back-to-heading t)
+              (move-marker org-log-note-marker (point))
+              (move-marker org-log-note-return-to (point))
+              (setq org-log-note-window-configuration (current-window-configuration)
+                    org-log-note-purpose 'refile
+                    org-log-note-state nil
+                    org-log-note-previous-state nil
+                    org-log-note-how 'time
+                    org-log-note-extra nil
+                    org-log-note-effective-time (org-current-effective-time))
+              (let ((b (get-buffer-create " *ecl-org-note*")))
+                (unwind-protect
+                    (with-current-buffer b
+                      (erase-buffer)
+                      (org-store-log-note))
+                  (when (buffer-live-p b) (kill-buffer b)))))))
+         (when (markerp new-loc) (move-marker new-loc nil))))
+      (save-buffer)
+      (unless (eq (current-buffer) dest-buf)
+        (with-current-buffer dest-buf (save-buffer))))
+    (format "refiled %s -> %s%s"
+            (string-join segments " > ")
+            (if to-segments (string-join to-segments " > ") "top level")
+            (if to-file (format " in %s" to-file) ""))))
+
 (defun ecl-org--get-keyword (file name)
   "Return the value(s) of the leading #+NAME: keyword in FILE.
 Multiple occurrences are joined with newlines; \"\" when none is present."
@@ -722,6 +786,22 @@ Stars, TODO keyword, priority and tags are preserved."
                          (ecl-org--args args nil 1
                                         "ecl org rename FILE SEG... TITLE")))
               (ecl-org-rename file segs title))))
+    ("refile"
+     :usage "[--to SEG]... [--to-file DEST] FILE SEG..."
+     :fn ,(lambda (&rest args)
+            "Move the subtree at SEG... in FILE under the --to path (like C-c C-w).
+The subtree's level adapts to the destination; --to repeats one
+destination segment per outline level, and no --to refiles to the
+top level.  --to-file DEST moves it into another file (default
+FILE).  Honors org-log-refile."
+            (pcase-let ((`(,opts ,file ,segs)
+                         (ecl-org--args args '(("--to" . repeat)
+                                               ("--to-file" . value))
+                                        0
+                                        "ecl org refile [--to SEG]... [--to-file DEST] FILE SEG...")))
+              (ecl-org-refile file segs
+                              (cdr (assoc "--to-file" opts))
+                              (cdr (assoc "--to" opts))))))
     ("blocks" . ecl-org-blocks)
     ("run" . ecl-org-run)
     ("tangle"

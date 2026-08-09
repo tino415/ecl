@@ -124,6 +124,14 @@ expect_exit "delete" 0 $?
 run org section "$F" Projects "Rate limits" >/dev/null 2>&1
 expect_exit "deleted heading gone (exit 2)" 2 $?
 
+run org refile --to Notes "$F" Projects "API /v2/payouts endpoint" >/dev/null
+expect_exit "refile under Notes" 0 $?
+out=$(run org section --subtree "$F" Notes)
+echo "$out" | grep -q '^\*\* API /v2/payouts endpoint' \
+  && ok "refile moved heading" || bad "refile moved heading: $out"
+run org refile --to Nowhere "$F" Notes "API /v2/payouts endpoint" >/dev/null 2>&1
+expect_exit "refile bad dest exits 2" 2 $?
+
 # --- miscount diagnostics ---
 out=$(run org property "$F" Projects Nope Owner bob 2>&1)
 expect_exit "bad path exits 2" 2 $?
