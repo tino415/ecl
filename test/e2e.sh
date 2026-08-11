@@ -160,6 +160,71 @@ expect_exit "bad path exits 2" 2 $?
 echo "$out" | grep -q "taken as NAME VALUE" \
   && ok "miscount hint printed" || bad "miscount hint: $out"
 
+# --- eval: the client waits for a human ---
+# No user in this daemon, so we play the user over a second emacsclient:
+# wait for the review buffer to appear, then run the real commands in it.
+decide() {
+  local i=0
+  while [ $i -lt 100 ]; do
+    if [ "$(emacsclient -s testing -e '(and (ecl-eval--buffers) t)' 2>/dev/null)" = "t" ]; then
+      emacsclient -s testing -e \
+        "(with-current-buffer (car (ecl-eval--buffers)) $1)" >/dev/null 2>&1
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  echo "decide: no review buffer appeared"
+  return 1
+}
+
+printf '(message "logged") (+ 1 2)' | run eval > "$WORK/ok.out" 2>"$WORK/ok.err" &
+pid=$!
+decide '(ecl-eval-approve)'
+wait $pid; expect_exit "eval approved exits 0" 0 $?
+grep -q '=> 3' "$WORK/ok.out" \
+  && ok "eval prints the value" || bad "eval value: $(cat "$WORK/ok.out")"
+grep -q 'logged' "$WORK/ok.out" \
+  && ok "eval prints captured messages" || bad "eval messages missing"
+grep -q 'waiting for approval' "$WORK/ok.err" \
+  && ok "eval announces the wait on stderr" || bad "eval wait notice missing"
+
+printf '(+ 1 2)' | run eval > "$WORK/edit.out" 2>&1 &
+pid=$!
+decide '(erase-buffer) (insert "(* 6 7)") (ecl-eval-approve)'
+wait $pid; expect_exit "edited buffer approved exits 0" 0 $?
+grep -q '=> 42' "$WORK/edit.out" \
+  && ok "eval runs the edited buffer" || bad "edited buffer: $(cat "$WORK/edit.out")"
+
+printf '(delete-file "/etc/passwd")' | run eval > "$WORK/deny.out" 2>&1 &
+pid=$!
+decide '(ecl-eval-deny "not now")'
+wait $pid; expect_exit "eval denied exits 3" 3 $?
+grep -q 'denied: not now' "$WORK/deny.out" \
+  && ok "deny reason reaches the caller" || bad "deny reason: $(cat "$WORK/deny.out")"
+
+printf '(error "boom")' | run eval > "$WORK/err.out" 2>&1 &
+pid=$!
+decide '(ecl-eval-approve)'
+wait $pid; expect_exit "eval error exits 2" 2 $?
+grep -q 'boom' "$WORK/err.out" \
+  && ok "eval error message reaches the caller" || bad "eval error: $(cat "$WORK/err.out")"
+
+# Client killed mid-wait: the daemon must not keep the review buffer.
+printf '(ignore)' | "$ECL" eval >/dev/null 2>&1 &
+pid=$!
+decide '(ignore)'
+kill "$pid" 2>/dev/null
+wait $pid 2>/dev/null
+sleep 0.5
+[ "$(emacsclient -s testing -e '(and (ecl-eval--buffers) t)' 2>/dev/null)" = "nil" ] \
+  && ok "killed client cancels the review buffer" || bad "review buffer leaked"
+
+out=$(run eval --help)
+expect_exit "eval --help exits 0" 0 $?
+echo "$out" | grep -q "usage: ecl eval \[CODE...\]" \
+  && ok "eval --help shows :usage line" || bad "eval --help usage line"
+
 echo
 echo "e2e: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

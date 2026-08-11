@@ -5,7 +5,9 @@
              (expand-file-name ".." (file-name-directory load-file-name)))
 (require 'ecl)
 (require 'ecl-org)
+(require 'ecl-eval)
 (ecl-register `("version" . ,(lambda ()
                                "Emacs version of the running daemon."
                                (emacs-version))))
 (ecl-register ecl-org-command-group)
+(ecl-register ecl-eval-command)

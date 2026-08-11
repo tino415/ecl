@@ -10,6 +10,10 @@
 ;; Stdin is read lazily: only when the daemon answers (ecl-need-stdin)
 ;; -- i.e. the resolved command is flagged :stdin -- do we slurp it and
 ;; re-dispatch.  Plain commands never block on an open stdin.
+;; A command that puts a decision to the user answers (ecl-pending ID)
+;; instead of a result: the daemon stays free and we poll `ecl-poll'
+;; until the human decides, with no timeout.  If we are killed while
+;; waiting, `ecl-cancel' tears the daemon-side UI down.
 ;; Exit codes: 0 ok, 2 daemon unreachable or command error,
 ;; 3 user denied in Emacs, 4 unknown command, 64 usage.
 
@@ -26,12 +30,36 @@
     (dolist (s value) (princ s) (terpri)))
    (t (prin1 value) (terpri))))
 
-(defun ecl-call (stdin)
+(defun ecl-remote (form)
   (condition-case err
-      (server-eval-at (or (getenv "ECL_SERVER") "server")
-                      (list 'ecl-dispatch (list 'quote argv)
-                            stdin default-directory))
+      (server-eval-at (or (getenv "ECL_SERVER") "server") form)
     (error (list 'ecl-error 'connect (error-message-string err)))))
+
+(defun ecl-call (stdin)
+  (ecl-remote (list 'ecl-dispatch (list 'quote argv)
+                    stdin default-directory)))
+
+(defun ecl-wait (id)
+  "Poll until the human decides request ID in Emacs.  No timeout: the
+command asked for a decision, and the caller can always interrupt us.
+`ecl-poll' answers nil while undecided, so anything else -- including a
+connect failure once the daemon is gone -- ends the wait."
+  (message "ecl: waiting for approval in Emacs...")
+  (let ((cancel (lambda () (ignore-errors (ecl-remote (list 'ecl-cancel id)))))
+        (delay 0.1)
+        (elapsed 0)
+        (result nil))
+    ;; Best effort on SIGINT/SIGTERM: don't leave a review buffer behind
+    ;; for a client that is no longer listening.
+    (add-hook 'kill-emacs-hook cancel)
+    (unwind-protect
+        (while (null result)
+          (sleep-for delay)
+          (setq elapsed (+ elapsed delay))
+          (when (> elapsed 1) (setq delay 0.3))
+          (setq result (ecl-remote (list 'ecl-poll id))))
+      (remove-hook 'kill-emacs-hook cancel))
+    result))
 
 (defun ecl-read-stdin ()
   ;; Blocks until the pipe/heredoc closes -- same contract as `cat`.
@@ -43,6 +71,8 @@
 (let ((result (ecl-call nil)))
   (when (equal result '(ecl-need-stdin))
     (setq result (ecl-call (ecl-read-stdin))))
+  (when (eq (car-safe result) 'ecl-pending)
+    (setq result (ecl-wait (cadr result))))
   (pcase result
     ;; Exit explicitly on success too: falling off the script would let
     ;; emacs resume option processing on whatever is left in argv.

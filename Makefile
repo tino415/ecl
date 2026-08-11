@@ -1,5 +1,5 @@
 EMACS ?= emacs
-SRC = ecl.el ecl-org.el
+SRC = ecl.el ecl-org.el ecl-eval.el
 
 .DELETE_ON_ERROR:
 
@@ -11,8 +11,9 @@ static-results.txt: $(SRC) Makefile
 	@rm -f *.elc
 	@tail -2 $@
 
-test-results.txt: $(SRC) test/ecl-test.el test/ecl-org-test.el Makefile
+test-results.txt: $(SRC) test/ecl-test.el test/ecl-org-test.el test/ecl-eval-test.el Makefile
 	$(EMACS) -Q --batch -L . -l ert -l test/ecl-test.el -l test/ecl-org-test.el \
+	  -l test/ecl-eval-test.el \
 	  -f ert-run-tests-batch-and-exit > $@ 2>&1 || (cat $@; exit 1)
 	@tail -3 $@
 

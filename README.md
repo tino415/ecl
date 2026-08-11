@@ -7,7 +7,9 @@ instead of raw `emacsclient --eval`.
 - `bin/ecl` — client: forwards argv, stdin and cwd over `server-eval-at`,
   formats the reply. `ECL_SERVER` selects the daemon (default `server`).
 - `ecl.el` — framework: command tree (`ecl-commands`), dispatch, help,
-  per-command y-or-n-p confirmation, stdin handshake.
+  per-command y-or-n-p confirmation, stdin handshake, pending requests.
+- `ecl-eval.el` — elisp module: `ecl eval` runs code in the daemon, but
+  only after a human approves it in an Emacs buffer.
 - `ecl-org.el` — org module: heading-addressed queries and edits
   (`ecl org outline|section|append|replace|create|delete|rename|refile|...`).
   Headings are positional path segments; text edits are scoped to a
@@ -22,6 +24,10 @@ instead of raw `emacsclient --eval`.
   :after ecl
   :config (ecl-register ecl-org-command-group))
 
+(use-package ecl-eval             ; elisp, gated on approval in Emacs
+  :after ecl
+  :config (ecl-register ecl-eval-command))
+
 (use-package my-local-module      ; your own glue registers the same way
   :after ecl
   :config (ecl-register `("project" :help "..." :commands (...))))
@@ -29,6 +35,30 @@ instead of raw `emacsclient --eval`.
 
 `ecl-register` adds or replaces a group by name (idempotent), so
 re-evaluating a module's block updates the table.
+
+## Approving elisp
+
+```sh
+printf '(length (buffer-list))' | ecl eval
+ecl eval '(emacs-version)'
+```
+
+The code appears in an `*ecl eval N*` buffer — ordinary `emacs-lisp-mode`,
+so it is font-locked, indented and **editable**. `C-c C-c` evaluates the
+buffer as it stands (fix a near-miss instead of rejecting it); `C-c C-k`
+asks for a reason and returns it to the caller; killing the buffer denies.
+There is no timeout and no way to skip the prompt.
+
+Approved calls print the value of the last form, followed by a
+`--- messages ---` section with anything the code printed or messaged.
+Denial exits 3, an error while evaluating exits 2.
+
+Two protocols keep this from blocking the daemon. A command that needs a
+human returns `(ecl-pending ID)` from `ecl-pending-start` and answers the
+client immediately; the client polls `ecl-poll` until the UI calls
+`ecl-pending-resolve`, and sends `ecl-cancel` if it is killed first. So
+Emacs stays usable — including for the review itself — while a request
+waits, and no review buffer outlives its caller.
 
 ## Tests
 

@@ -23,6 +23,9 @@
              :fn ,(lambda () "Return stdin." ecl-stdin))
             ("maybe" :stdin optional
              :fn ,(lambda () "Return stdin length." (number-to-string (length ecl-stdin))))
+            ("ask" . ,(lambda ()
+                        "Wait for a human."
+                        (ecl-pending-start (lambda (_id) #'ignore))))
             ("wrapped" :usage "[--x] A B"
              :fn ,(lambda (&rest args) "Wrapper." (string-join args ",")))
             ("grp" :help "A group"
@@ -134,6 +137,37 @@
      (pcase (ecl-dispatch '("danger"))
        (`(ecl-error denied ,_) t)
        (other (ert-fail (format "unexpected: %S" other)))))))
+
+;;; Pending requests
+
+(ert-deftest ecl-test-pending-marker-passes-through-unwrapped ()
+  "A command awaiting a human answers the client, not the value printer."
+  (ecl-test--with-table
+   (let ((ecl--pending (make-hash-table :test 'equal)))
+     (pcase (ecl-dispatch '("ask"))
+       (`(ecl-pending ,id)
+        (should (equal (ecl-poll id) nil))
+        (ecl-pending-resolve id '(ecl-ok "decided"))
+        (should (equal (ecl-poll id) '(ecl-ok "decided")))
+        ;; Reported once, then forgotten.
+        (should (equal (ecl-poll id) nil)))
+       (other (ert-fail (format "unexpected: %S" other)))))))
+
+(ert-deftest ecl-test-pending-cancel-runs-teardown ()
+  (let ((ecl--pending (make-hash-table :test 'equal))
+        (torn-down nil))
+    (pcase (ecl-pending-start (lambda (_id) (lambda () (setq torn-down t))))
+      (`(ecl-pending ,id)
+       (ecl-cancel id)
+       (should torn-down)
+       (should (equal (ecl-poll id) nil)))
+      (other (ert-fail (format "unexpected: %S" other))))))
+
+(ert-deftest ecl-test-pending-setup-failure-leaves-no-entry ()
+  "A UI that fails to come up must not strand a request in the table."
+  (let ((ecl--pending (make-hash-table :test 'equal)))
+    (should-error (ecl-pending-start (lambda (_id) (error "no frame"))))
+    (should (zerop (hash-table-count ecl--pending)))))
 
 ;;; Directory / stdin exposure
 

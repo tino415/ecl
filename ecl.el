@@ -2,7 +2,7 @@
 
 ;; Author: Martin Cernak
 ;; URL: https://github.com/tino415/ecl
-;; Version: 0.2.0
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "29.1"))
 
 ;;; Commentary:
@@ -39,6 +39,14 @@
 ;; touch stdin, so they cannot block on an open-but-silent descriptor.
 ;; `ecl-directory' carries the client's working directory for
 ;; resolving relative file arguments.
+;;
+;; A command that needs an unhurried human decision (rather than the
+;; quick y-or-n-p of :confirm) must not block the dispatch: it puts its
+;; UI up, returns (ecl-pending ID) from `ecl-pending-start', and the
+;; daemon answers the client immediately.  The client then polls
+;; `ecl-poll' until the UI calls `ecl-pending-resolve', and sends
+;; `ecl-cancel' if it dies first.  The daemon stays responsive while a
+;; request waits.  See ecl-eval.el for the approval-buffer example.
 
 ;;; Code:
 
@@ -126,20 +134,84 @@ Returns ENTRY."
             (if confirm "asks for confirmation in Emacs before running\n" "")
             "\n" (ecl--doc plist) "\n")))
 
+(defun ecl--user-frame ()
+  "Frame most likely to have a human in front of it.
+The first graphical frame, or the selected one when running headless
+\(batch, `emacs -Q --daemon' with no client attached)."
+  (or (seq-find (lambda (f) (frame-parameter f 'window-system)) (frame-list))
+      (selected-frame)))
+
 (defun ecl--confirm (path args)
   "Prompt y-or-n-p in Emacs; signal `ecl-denied' unless answered y in time."
   (let ((prompt (format "ecl: allow `%s'? "
                         (string-join (append path args) " "))))
     (unless (with-timeout (ecl-confirm-timeout nil)
-              ;; Prefer a GUI frame; force a minibuffer prompt (no dialog).
-              (let ((frame (or (seq-find (lambda (f) (frame-parameter f 'window-system))
-                                         (frame-list))
-                               (selected-frame)))
+              ;; Force a minibuffer prompt (no GUI dialog).
+              (let ((frame (ecl--user-frame))
                     (last-nonmenu-event t))
                 (with-selected-frame frame
                   (raise-frame frame)
                   (condition-case nil (y-or-n-p prompt) (quit nil)))))
       (signal 'ecl-denied (list "denied or timed out in Emacs")))))
+
+;;; Pending requests
+;;
+;; `ecl--confirm' answers inside the dispatch, which blocks the daemon
+;; for as long as the prompt is up -- fine for a 60s y-or-n-p, wrong for
+;; a review the user may sit on.  A pending request inverts that: the
+;; command returns at once and the client waits instead.
+
+(defvar ecl--pending (make-hash-table :test 'equal)
+  "Requests awaiting a human decision, keyed by id.
+Each value is a plist with :result (a dispatch tuple, nil while
+undecided) and :cancel (a thunk tearing the UI down).")
+
+(defvar ecl--pending-counter 0
+  "Source of pending request ids.
+A counter, not `random', so tests observe stable ids.")
+
+(defun ecl-pending-start (setup)
+  "Register a request awaiting a human decision and return its marker.
+SETUP is called with the new id and should put the UI up and return a
+thunk that tears it down again (used by `ecl-cancel' when the client
+goes away).  Returns (ecl-pending ID), which `ecl--run' passes through
+to the client unwrapped; the UI later calls `ecl-pending-resolve'."
+  (let ((id (number-to-string (setq ecl--pending-counter
+                                    (1+ ecl--pending-counter)))))
+    (puthash id (list :result nil :cancel #'ignore) ecl--pending)
+    (condition-case err
+        (let ((cancel (funcall setup id)))
+          (puthash id (list :result nil
+                            :cancel (if (functionp cancel) cancel #'ignore))
+                   ecl--pending))
+      (error (remhash id ecl--pending) (signal (car err) (cdr err))))
+    (list 'ecl-pending id)))
+
+(defun ecl-pending-resolve (id result)
+  "Hand RESULT to the client waiting on ID.
+RESULT is a dispatch tuple -- (ecl-ok VALUE) or (ecl-error KIND MSG).
+Unknown ids are ignored, so deciding a request whose client already
+gave up is harmless."
+  (let ((req (gethash id ecl--pending)))
+    (when req (puthash id (plist-put req :result result) ecl--pending))))
+
+(defun ecl-poll (id)
+  "Return the tuple for pending request ID, or nil while undecided.
+Called by the ecl client over `server-eval-at', like `ecl-dispatch'.
+Answers once: the request is dropped as it is reported."
+  (let ((result (plist-get (gethash id ecl--pending) :result)))
+    (when result (remhash id ecl--pending))
+    result))
+
+(defun ecl-cancel (id)
+  "Drop pending request ID and tear its UI down.
+Sent by the client when it dies before a decision.  Unknown ids are
+ignored."
+  (let ((req (gethash id ecl--pending)))
+    (when req
+      (remhash id ecl--pending)
+      (ignore-errors (funcall (plist-get req :cancel)))))
+  nil)
 
 (defun ecl--run (plist args path confirm)
   (if (member "--help" args)
@@ -159,7 +231,13 @@ Returns ENTRY."
         (list 'ecl-error 'usage (ecl--command-help plist path confirm)))
        (t
         (when confirm (ecl--confirm path args))
-        (list 'ecl-ok (apply fn args)))))))
+        (let ((value (apply fn args)))
+          ;; A command that put a decision to the user answers with its
+          ;; own marker; hand it to the client as-is so it starts polling
+          ;; instead of printing it as a value.
+          (if (eq (car-safe value) 'ecl-pending)
+              value
+            (list 'ecl-ok value))))))))
 
 (defun ecl--dispatch (table args path confirm)
   "Resolve ARGS in TABLE.  PATH is consumed tokens, CONFIRM inherited."
@@ -186,8 +264,10 @@ Returns ENTRY."
   "Entry point for the ecl client.  ARGS is the shell argv as strings.
 STDIN is input piped to the client (nil when none), DIRECTORY its cwd;
 both are exposed to commands as `ecl-stdin' and `ecl-directory'.
-Never signals; returns (ecl-ok VALUE), (ecl-help TEXT) or
-\(ecl-error KIND MESSAGE)."
+Never signals; returns (ecl-ok VALUE), (ecl-help TEXT),
+\(ecl-error KIND MESSAGE), (ecl-need-stdin) or (ecl-pending ID) -- the
+last two ask the client to re-dispatch with stdin, respectively to poll
+`ecl-poll' until a human decides."
   (let ((ecl-stdin stdin)
         (ecl-directory directory))
     (condition-case err
