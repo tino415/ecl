@@ -17,12 +17,34 @@ expect_exit() {
   if [ "$3" -eq "$2" ]; then ok "$1"; else bad "$1 (exit $3, want $2)"; fi
 }
 
+# Asking the daemon to die can hang -- it has been seen ignoring
+# `kill-emacs' over the socket while still answering everything else --
+# so every teardown is bounded and then insists with a signal.  A daemon
+# that survives holds the socket name and poisons the next run.
+reap() {
+  local pid=$1
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  kill "$pid" 2>/dev/null
+  for _ in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  kill -9 "$pid" 2>/dev/null
+}
+
+kill_daemon() {
+  local pid
+  pid=$(timeout 5 emacsclient -s testing -e '(emacs-pid)' 2>/dev/null)
+  timeout 5 emacsclient -s testing -e '(kill-emacs)' >/dev/null 2>&1
+  reap "$pid"
+}
+
 cleanup() {
-  emacsclient -s testing -e '(kill-emacs)' >/dev/null 2>&1
+  kill_daemon
   rm -rf "$WORK"
 }
 
-emacsclient -s testing -e '(kill-emacs)' >/dev/null 2>&1
+kill_daemon
 emacs -Q --daemon=testing -l test/e2e-init.el 2>/dev/null || {
   echo "FAIL: could not start testing daemon"; exit 1; }
 WORK=$(mktemp -d)
