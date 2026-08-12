@@ -74,6 +74,28 @@ make check                # all three
 The e2e layer starts a throwaway daemon named `testing`; it never touches
 your live Emacs.
 
+## Debugging
+
+A throwaway daemon of your own, on a socket inside the checkout:
+
+```sh
+make .debug/socket                      # emacs -Q --daemon on .debug/socket
+./test/decl org outline ~/some/file.org # bin/ecl pointed at that socket
+make debug-down                         # stop it
+make debug-results.txt                  # timed probe table, DEBUG_ORG=FILE
+```
+
+`test/decl` has the socket path baked in, so it cannot reach your real
+daemon; `make .debug/socket` restarts the daemon whenever the elisp
+changes. `test/debug-daemon.sh eval FORM` evaluates a form in it (over
+`server-eval-at`, like the client) when a probe needs more than the
+command surface.
+
+The daemon loads `test/debug-init.el`, which is `test/e2e-init.el` plus
+`enable-dir-local-variables` nil — see the comment there for why a `-Q`
+daemon otherwise wedges on files under your home directory for reasons
+that have nothing to do with what you are debugging.
+
 ## Install
 
 **Elisp** (any system with Emacs 29+): straight from git via the
