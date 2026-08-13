@@ -11,9 +11,12 @@ instead of raw `emacsclient --eval`.
 - `ecl-eval.el` — elisp module: `ecl eval` runs code in the daemon, but
   only after a human approves it in an Emacs buffer.
 - `ecl-org.el` — org module: heading-addressed queries and edits
-  (`ecl org outline|section|append|replace|create|delete|rename|refile|...`).
+  (`ecl org outline|section|append|replace|cut|create|delete|rename|refile|...`).
   Headings are positional path segments; text edits are scoped to a
-  section's content, structure has its own commands.
+  section's content, structure has its own commands. Babel blocks are the
+  exception: `blocks|block|set-block|run|tangle --block` address a
+  `#+name:`, so one block can be rewritten without touching the prose
+  around it.
 
 ## Wiring
 

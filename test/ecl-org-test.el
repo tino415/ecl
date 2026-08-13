@@ -26,6 +26,18 @@ QA body.
 Endpoint notes.
 * Notes
 Loose note.
+Second note.
+* Snippets
+Prose before the block.
+
+#+name: greet
+#+begin_src shell :results output
+  echo hi
+    echo there
+,* not a heading
+#+end_src
+
+Prose after the block.
 ")
 
 (defmacro ecl-org-test--with-file (var &rest body)
@@ -93,6 +105,14 @@ Loose note.
   (should-error (ecl-org--split-pairs "no sentinel here\n" "@@REPLACE@@"))
   (should-error (ecl-org--split-pairs "a\n@@REPLACE@@\nb\n@@REPLACE@@\nc\n" "@@REPLACE@@"))
   (should-error (ecl-org--split-pairs "a\n@@REPLACE@@\nb\n@@REPLACE@@\n\n" "@@REPLACE@@")))
+
+;;; ecl-org--cut-chunks
+
+(ert-deftest ecl-org-test-cut-chunks ()
+  "A lone chunk needs no sentinel; several are split like replace pairs."
+  (should (equal (ecl-org--cut-chunks "gone\n" "@@CUT@@") '("gone")))
+  (should (equal (ecl-org--cut-chunks "a\n@@CUT@@\nb\n" "@@CUT@@") '("a" "b")))
+  (should-error (ecl-org--cut-chunks "a\n@@CUT@@\n\n" "@@CUT@@")))
 
 ;;; section / content scoping
 
@@ -176,6 +196,83 @@ Loose note.
                     '(("Body line \\(one\\)\\." . "Line \\1!")) t)
                    "1"))
     (should (string-search "Line one!" (ecl-org-section f '("Projects" "Ship v2"))))))
+
+;;; cut
+
+(ert-deftest ecl-org-test-cut-removes-text-keeps-the-rest ()
+  (ecl-org-test--with-file f
+    (should (equal (ecl-org-cut-section f '("Notes") '("Loose note.\n")) "1"))
+    (let ((s (ecl-org-section f '("Notes"))))
+      (should-not (string-search "Loose note." s))
+      (should (string-search "Second note." s)))))
+
+(ert-deftest ecl-org-test-cut-atomic-on-miss ()
+  (ecl-org-test--with-file f
+    (let ((before (ecl-org-test--file-string f)))
+      (should-error (ecl-org-cut-section
+                     f '("Notes") '("Loose note." "no such text")))
+      (should (equal before (ecl-org-test--file-string f))))))
+
+(ert-deftest ecl-org-test-cut-regexp ()
+  (ecl-org-test--with-file f
+    (should (equal (ecl-org-cut-section f '("Notes") '("^Loose .*\n") t) "1"))
+    (should-not (string-search "Loose note." (ecl-org-section f '("Notes"))))))
+
+(ert-deftest ecl-org-test-cut-scope-excludes-children ()
+  (ecl-org-test--with-file f
+    (should-error (ecl-org-cut-section f '("Projects" "Ship v2") '("QA body.")))))
+
+;;; block / set-block
+
+(ert-deftest ecl-org-test-block-body-only ()
+  (ecl-org-test--with-file f
+    (let ((b (ecl-org-block f "greet")))
+      ;; Org's comma escapes belong to the file, not to the body.
+      (should (equal b "  echo hi\n    echo there\n* not a heading\n"))
+      (should-not (string-search "begin_src" b)))))
+
+(ert-deftest ecl-org-test-set-block-escapes-heading-like-lines ()
+  "An unescaped `*' line would end the block and fork the outline."
+  (ecl-org-test--with-file f
+    (ecl-org-set-block f "greet" "* still not a heading\n#+end_src\n")
+    (should (string-search ",* still not a heading"
+                           (ecl-org-test--file-string f)))
+    (should (equal (ecl-org-block f "greet")
+                   "* still not a heading\n#+end_src\n"))
+    (should-not (string-search "* still not a heading" (ecl-org-outline f)))))
+
+(ert-deftest ecl-org-test-block-full ()
+  (ecl-org-test--with-file f
+    (let ((b (ecl-org-block f "greet" t)))
+      (should (string-prefix-p "#+name: greet\n" b))
+      (should (string-search ":results output" b))
+      (should (string-suffix-p "#+end_src\n" b))
+      (should-not (string-search "Prose after" b)))))
+
+(ert-deftest ecl-org-test-block-unknown-name-errors ()
+  (ecl-org-test--with-file f
+    (let ((err (should-error (ecl-org-block f "nope"))))
+      (should (string-search "ecl org blocks" (cadr err))))))
+
+(ert-deftest ecl-org-test-set-block-keeps-neighbours ()
+  "The regression this exists for: a whole-body rewrite drops the prose."
+  (ecl-org-test--with-file f
+    (should (equal (ecl-org-set-block f "greet" "echo replaced\n")
+                   "updated block greet"))
+    (let ((s (ecl-org-section f '("Snippets"))))
+      (should (string-search "echo replaced" s))
+      (should-not (string-search "echo there" s))
+      (should (string-search "#+name: greet" s))
+      (should (string-search ":results output" s))
+      (should (string-search "Prose before the block." s))
+      (should (string-search "Prose after the block." s)))))
+
+(ert-deftest ecl-org-test-set-block-round-trip-is-byte-identical ()
+  "Reading a block and writing it back must not re-indent it."
+  (ecl-org-test--with-file f
+    (let ((before (ecl-org-test--file-string f)))
+      (ecl-org-set-block f "greet" (ecl-org-block f "greet"))
+      (should (equal before (ecl-org-test--file-string f))))))
 
 ;;; create
 

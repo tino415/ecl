@@ -8,10 +8,16 @@
 ;; outline level -- and every path command follows the grammar
 ;; [--flags] FILE SEG... [FIXED-DATA] (exactly one elastic run; anything
 ;; optional is a front flag or stdin).  Text edits (append, replace,
-;; create body) are scoped to a section's CONTENT -- after the heading
-;; line, property drawer included, up to the first child heading; the
-;; tree structure is only reachable through its own commands (create,
-;; delete, rename, refile, status).
+;; cut, create body) are scoped to a section's CONTENT -- after the
+;; heading line, property drawer included, up to the first child
+;; heading; the tree structure is only reachable through its own
+;; commands (create, delete, rename, refile, status).
+;;
+;; Babel blocks are the exception to path addressing: blocks, block,
+;; set-block, run and tangle --block take a #+name: instead of an
+;; outline path, so they keep working when a section is moved or
+;; retitled -- and so one block can be rewritten without touching the
+;; prose around it.
 ;;
 ;; Register the command group from your init file:
 ;;   (use-package ecl-org
@@ -24,6 +30,7 @@
 (require 'org-element)
 (require 'org-attach)
 (require 'org-refile)
+(require 'org-src)
 (require 'ecl)
 
 (defun ecl-org--file (file)
@@ -152,19 +159,71 @@ CONTENT should include its own leading newline.  Saves the buffer."
     (save-buffer))
   nil)
 
+(defun ecl-org--goto-block (name file)
+  "Move point to the babel src block named NAME (via #+name:) in FILE.
+FILE is only used in the error message; the block is looked up in the
+current buffer.  Returns the position."
+  (let ((pos (org-babel-find-named-block name)))
+    (unless pos
+      (error "No src block named '%s' in %s (see: ecl org blocks)" name file))
+    (goto-char pos)))
+
 (defun ecl-org-run (file name)
   "Execute the babel src block named NAME (via #+name:) in FILE.
 Return result as string. Inserts #+RESULTS: in buffer and saves.
 Bypasses `org-confirm-babel-evaluate'."
   (with-current-buffer (find-file-noselect (ecl-org--file file))
     (org-with-wide-buffer
-     (let ((pos (org-babel-find-named-block name)))
-       (unless pos (error "No src block named '%s' in %s" name file))
-       (goto-char pos)
-       (let* ((org-confirm-babel-evaluate nil)
-              (result (org-babel-execute-src-block)))
-         (save-buffer)
-         (format "%s" (or result "")))))))
+     (ecl-org--goto-block name file)
+     (let* ((org-confirm-babel-evaluate nil)
+            (result (org-babel-execute-src-block)))
+       (save-buffer)
+       (format "%s" (or result ""))))))
+
+(defun ecl-org-block (file name &optional full)
+  "Return the body of the babel src block named NAME in FILE.
+Body only -- the text between the #+begin_src and #+end_src lines,
+verbatim.  With FULL non-nil, the whole block instead: from its #+name:
+line through #+end_src.  The result always ends in a newline.  Pure
+query; blocks are addressed by name, not by outline path."
+  (with-current-buffer (find-file-noselect (ecl-org--file file))
+    (org-with-wide-buffer
+     (ecl-org--goto-block name file)
+     (let* ((el (org-element-at-point))
+            (text (if full
+                      (buffer-substring-no-properties
+                       (org-element-property :begin el)
+                       (save-excursion
+                         (goto-char (org-element-property :end el))
+                         (skip-chars-backward " \t\n")
+                         (line-end-position)))
+                    (org-element-property :value el))))
+       (if (string-suffix-p "\n" text) text (concat text "\n"))))))
+
+(defun ecl-org-set-block (file name body)
+  "Replace the body of the babel src block named NAME in FILE with BODY.
+Only the body between #+begin_src and #+end_src changes: the #+name:
+line, the header arguments and every neighbouring line are left alone --
+this is the narrow alternative to rewriting a whole section with
+`ecl-org-create'.  BODY keeps its own indentation and is escaped the way
+Org stores block content, so it round-trips with `ecl-org-block'.  A
+#+RESULTS: drawer left over from an earlier run is not touched.  Saves
+the buffer and returns a confirmation string."
+  (with-current-buffer (find-file-noselect (ecl-org--file file))
+    (org-with-wide-buffer
+     (ecl-org--goto-block name file)
+     ;; Two Org encodings to undo, both of which would otherwise rewrite
+     ;; lines the caller never touched: without `org-src-preserve-indentation'
+     ;; the body is re-indented by `org-edit-src-content-indentation', and
+     ;; `org-babel-update-block-body' inserts verbatim while `ecl-org-block'
+     ;; hands out the *unescaped* body -- so a line starting with `*' or
+     ;; `#+' has to get its comma back, or it ends the block.
+     (let ((org-src-preserve-indentation t))
+       (org-babel-update-block-body
+        (org-escape-code-in-string
+         (if (string-suffix-p "\n" body) body (concat body "\n")))))
+     (save-buffer)
+     (format "updated block %s" name))))
 
 (defun ecl-org-tangle (file &optional block segments)
   "Tangle src blocks in FILE, returning the list of files written.
@@ -179,10 +238,8 @@ mutually exclusive."
      (save-restriction
        (cond
         (block
-         (let ((pos (org-babel-find-named-block block)))
-           (unless pos (error "No src block named '%s' in %s" block file))
-           (goto-char pos)
-           (org-babel-tangle '(4))))
+         (ecl-org--goto-block block file)
+         (org-babel-tangle '(4)))
         (segments
          (goto-char (ecl-org--find-olp segments))
          (org-narrow-to-subtree)
@@ -260,16 +317,21 @@ are omitted since they cannot be named on the command line."
                                 (nth 2 r)))
                       rows "\n")))))))
 
-(defun ecl-org--split-pairs (content sentinel)
-  "Split CONTENT on SENTINEL lines into a list of (OLD . NEW) pairs.
-One trailing newline (a heredoc artifact) is stripped from CONTENT first.
-SENTINEL must appear on a line of its own; chunks pair up in order
-\(OLD1 NEW1 OLD2 NEW2 ...), so the count must be even.  An empty OLD or
-NEW chunk is an error -- deletion has its own command."
+(defun ecl-org--split-chunks (content sentinel)
+  "Split CONTENT into the chunks separated by SENTINEL lines.
+One trailing newline (a heredoc artifact) is stripped from CONTENT first;
+SENTINEL must appear on a line of its own.  Emptiness is the caller's
+policy -- this only splits."
   (when (string-suffix-p "\n" content)
     (setq content (substring content 0 -1)))
-  (let ((chunks (split-string content
-                              (concat "\n" (regexp-quote sentinel) "\n"))))
+  (split-string content (concat "\n" (regexp-quote sentinel) "\n")))
+
+(defun ecl-org--split-pairs (content sentinel)
+  "Split CONTENT on SENTINEL lines into a list of (OLD . NEW) pairs.
+Chunks pair up in order (OLD1 NEW1 OLD2 NEW2 ...), so the count must be
+even.  An empty OLD or NEW chunk is an error -- removing text has its
+own command."
+  (let ((chunks (ecl-org--split-chunks content sentinel)))
     (when (= (length chunks) 1)
       (error "Sentinel line %S not found in input" sentinel))
     (when (= 1 (mod (length chunks) 2))
@@ -281,9 +343,19 @@ NEW chunk is an error -- deletion has its own command."
           (when (string-empty-p old)
             (error "Empty OLD chunk (nothing before a sentinel)"))
           (when (string-empty-p new)
-            (error "Empty NEW chunk; deleting a section is `ecl org delete'"))
+            (error "Empty NEW chunk; removing text is `ecl org cut'"))
           (push (cons old new) pairs)))
       (nreverse pairs))))
+
+(defun ecl-org--cut-chunks (content sentinel)
+  "Split CONTENT on SENTINEL lines into a list of texts to remove.
+A single chunk needs no sentinel at all; an empty chunk is an error, so a
+stray sentinel cannot turn into \"remove nothing\"."
+  (let ((chunks (ecl-org--split-chunks content sentinel)))
+    (dolist (chunk chunks)
+      (when (string-empty-p chunk)
+        (error "Empty chunk (nothing on one side of a sentinel)")))
+    chunks))
 
 (defun ecl-org-replace-section (file segments pairs &optional regexp)
   "Apply PAIRS of (OLD . NEW) replacements to the content at SEGMENTS in FILE.
@@ -318,6 +390,16 @@ counts, one per line.  Saves the buffer."
        (insert text)
        (save-buffer)
        (mapconcat #'number-to-string (nreverse counts) "\n")))))
+
+(defun ecl-org-cut-section (file segments texts &optional regexp)
+  "Remove each of TEXTS from the content at SEGMENTS in FILE.
+The counterpart of `ecl-org-replace-section' with an empty replacement:
+same content-only scope, same atomicity (every text must match or nothing
+is written), same REGEXP option.  Returns the per-text removal counts,
+one per line.  Saves the buffer."
+  (ecl-org-replace-section file segments
+                           (mapcar (lambda (text) (cons text "")) texts)
+                           regexp))
 
 (defun ecl-org-set-status (file segments state &optional note)
   "Set the TODO STATE of the heading at SEGMENTS in FILE, honoring Org logging.
@@ -741,6 +823,26 @@ count per pair."
                                      (or (cdr (assoc "--sep" opts))
                                          "@@REPLACE@@"))
                (cdr (assoc "--regexp" opts))))))
+    ("cut" :stdin t
+     :usage "[--regexp] [--sep SENTINEL] FILE SEG..."
+     :fn ,(lambda (&rest args)
+            "Remove text from the content at SEG... in FILE.
+Stdin holds the text to remove; several chunks may be given in one
+call, separated by lines equal to SENTINEL (default @@CUT@@), and a
+single chunk needs no sentinel.  Scope is the section's content only
+\(no heading lines) -- removing a whole subtree is `ecl org delete'.
+Literal match unless --regexp.  Atomic: every chunk must match or
+nothing is written.  Prints one removal count per chunk."
+            (pcase-let ((`(,opts ,file ,segs)
+                         (ecl-org--args args '(("--regexp" . boolean)
+                                               ("--sep" . value))
+                                        0
+                                        "ecl org cut [--regexp] [--sep SENTINEL] FILE SEG...")))
+              (ecl-org-cut-section
+               file segs
+               (ecl-org--cut-chunks ecl-stdin
+                                    (or (cdr (assoc "--sep" opts)) "@@CUT@@"))
+               (cdr (assoc "--regexp" opts))))))
     ("create" :stdin optional
      :usage "[--parents] [--todo STATE] [--effort E] [--tag T]... [--property K=V]... [--clear-body] FILE SEG..."
      :fn ,(lambda (&rest args)
@@ -803,6 +905,30 @@ FILE).  Honors org-log-refile."
                               (cdr (assoc "--to-file" opts))
                               (cdr (assoc "--to" opts))))))
     ("blocks" . ecl-org-blocks)
+    ("block"
+     :usage "[--full] FILE NAME"
+     :fn ,(lambda (&rest args)
+            "Print the body of the src block named NAME in FILE.
+Body only -- the text between #+begin_src and #+end_src.  --full
+prints the whole block instead, from its #+name: line through
+#+end_src (header args included).  Blocks are addressed by name, not
+by outline path; `ecl org blocks' lists the names."
+            (pcase-let ((`(,opts ,file ,segs ,name)
+                         (ecl-org--args args '(("--full" . boolean)) 1
+                                        "ecl org block [--full] FILE NAME"
+                                        0)))
+              (when segs
+                (error "usage: ecl org block [--full] FILE NAME\n\
+extra args between FILE and NAME: %s" (string-join segs " ")))
+              (ecl-org-block file name (cdr (assoc "--full" opts))))))
+    ("set-block" :stdin t
+     :fn ,(lambda (file name)
+            "Replace the body of the src block named NAME in FILE with stdin.
+The #+name: line, the header arguments and every neighbouring line
+are left alone -- unlike `ecl org create', which rewrites a whole
+section body.  Stdin is written verbatim; any stale #+RESULTS: is
+left as it is."
+            (ecl-org-set-block file name ecl-stdin)))
     ("run" . ecl-org-run)
     ("tangle"
      :usage "[--block NAME] FILE [SEG...]"

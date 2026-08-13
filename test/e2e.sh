@@ -61,6 +61,15 @@ cat > "$F" <<'EOF'
 Endpoint notes.
 * Notes
 Loose note.
+* Snippets
+Prose before the block.
+
+#+name: greet
+#+begin_src shell :results output
+echo hi
+#+end_src
+
+Prose after the block.
 EOF
 
 # --- plumbing ---
@@ -128,6 +137,55 @@ EOF
 expect_exit "failed multi-pair replace exits 2" 2 $?
 cmp -s "$F" "$WORK/before.org" \
   && ok "failed replace leaves file byte-identical" || bad "atomicity broken"
+
+# --- cut: removes one chunk, atomic when a chunk misses ---
+out=$(run org cut "$F" Notes <<'EOF'
+Appended and edited paragraph.
+EOF
+)
+expect_exit "cut a chunk" 0 $?
+[ "$out" = "1" ] && ok "cut prints count" || bad "cut count: $out"
+out=$(run org section "$F" Notes)
+echo "$out" | grep -q "Appended and edited" \
+  && bad "cut left the text behind" || ok "cut removed the text"
+echo "$out" | grep -q "Loose note." \
+  && ok "cut kept the rest of the body" || bad "cut ate the neighbour: $out"
+
+cp "$F" "$WORK/before-cut.org"
+run org cut "$F" Notes >/dev/null 2>&1 <<'EOF'
+Loose note.
+@@CUT@@
+text that does not exist
+EOF
+expect_exit "failed multi-chunk cut exits 2" 2 $?
+cmp -s "$F" "$WORK/before-cut.org" \
+  && ok "failed cut leaves file byte-identical" || bad "cut atomicity broken"
+
+# --- block / set-block: addressed by #+name:, neighbours untouched ---
+out=$(run org block "$F" greet)
+expect_exit "block exits 0" 0 $?
+[ "$out" = "echo hi" ] && ok "block prints the body only" || bad "block body: $out"
+out=$(run org block --full "$F" greet)
+echo "$out" | grep -q '^#+name: greet' \
+  && ok "block --full includes the name line" || bad "block --full: $out"
+echo "$out" | grep -q ':results output' \
+  && ok "block --full includes header args" || bad "block --full header args"
+
+run org set-block "$F" greet >/dev/null <<'EOF'
+echo replaced
+echo again
+EOF
+expect_exit "set-block" 0 $?
+out=$(run org section "$F" Snippets)
+echo "$out" | grep -q "echo replaced" \
+  && ok "set-block wrote the body" || bad "set-block body: $out"
+echo "$out" | grep -q "Prose before the block." && echo "$out" | grep -q "Prose after the block." \
+  && ok "set-block kept the surrounding prose" || bad "set-block ate a neighbour: $out"
+echo "$out" | grep -q ':results output' \
+  && ok "set-block kept the header args" || bad "set-block lost header args"
+
+run org block "$F" nosuchblock >/dev/null 2>&1
+expect_exit "unknown block exits 2" 2 $?
 
 # --- status --note: the daemon-only logging path ---
 run org status --note "blocked on infra" "$F" Projects "Rate limiting" WAITING >/dev/null
