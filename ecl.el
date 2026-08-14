@@ -17,6 +17,13 @@
 ;;     :after ecl
 ;;     :config (ecl-register ecl-org-command-group))
 ;;
+;; A module's command table is a `defconst', so re-loading the file in a
+;; running daemon rebuilds it and the next `ecl-register' publishes the
+;; new commands.  As a `defvar' it would keep the value already bound --
+;; a rebuilt package would load its new handlers and still serve the old
+;; command set, silently.  `ecl-commands' itself stays a `defvar': that
+;; one is session state, and a reload must not drop registrations.
+;;
 ;; Entry shapes, at top level and inside any :commands list:
 ;;   (NAME . FN)                                   plain command
 ;;   (NAME :fn FN [:help STR] [:usage STR] [:confirm t] [:stdin t])

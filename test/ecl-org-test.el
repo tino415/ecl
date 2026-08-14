@@ -479,5 +479,21 @@ Prose after the block.
             (should-error (ecl-org-tangle f "hello" '("Blocks"))))
         (when (file-exists-p out) (delete-file out))))))
 
+;;; reload
+
+(ert-deftest ecl-org-test-reload-rebuilds-the-command-table ()
+  "Re-loading the module must rebuild its table, not keep the bound one.
+As `defvar' these tables survived a reload, so a rebuilt package left the
+daemon registering the previous release's commands -- new handlers loaded
+but unreachable, and no error anywhere to say so."
+  (unwind-protect
+      (progn
+        (setq ecl-org-commands (cons '("sentinel" . ignore) ecl-org-commands))
+        (load "ecl-org" nil t)
+        (should-not (assoc "sentinel" ecl-org-commands))
+        (should (assoc "cut" ecl-org-commands))
+        (should (assoc "set-block" ecl-org-commands)))
+    (setq ecl-org-commands (assoc-delete-all "sentinel" ecl-org-commands))))
+
 (provide 'ecl-org-test)
 ;;; ecl-org-test.el ends here

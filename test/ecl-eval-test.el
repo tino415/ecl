@@ -168,5 +168,15 @@ Binds `id' to the pending request id.  The buffer is killed afterwards."
     ;; Indented on arrival, but not marked modified.
     (should-not (buffer-modified-p))))
 
+;;; Reload
+
+(ert-deftest ecl-eval-test-reload-rebuilds-the-command-entry ()
+  "Re-loading the module must rebuild its entry, not keep the bound one."
+  (setq ecl-eval-command '("eval" :fn ignore))
+  (load "ecl-eval" nil t)
+  (should-not (equal ecl-eval-command '("eval" :fn ignore)))
+  (should (equal (car ecl-eval-command) "eval"))
+  (should (functionp (plist-get (cdr ecl-eval-command) :fn))))
+
 (provide 'ecl-eval-test)
 ;;; ecl-eval-test.el ends here

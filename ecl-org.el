@@ -777,7 +777,7 @@ Replaces the first #+TODO line; consolidate manually if several exist."
      (save-buffer))
     nil))
 
-(defvar ecl-org-commands
+(defconst ecl-org-commands
   `(("outline" . ecl-org-outline)
     ("section"
      :usage "[--subtree] FILE SEG..."
@@ -1048,7 +1048,7 @@ With --inherit, fall back to the nearest ancestor that sets NAME."
                          (bound-and-true-p org-agenda-files))))
   "Command entries of the `ecl org' group, in listing order.")
 
-(defvar ecl-org-command-group
+(defconst ecl-org-command-group
   `("org"
     :help "Org file tools (headings addressed as positional path segments)"
     :commands ,ecl-org-commands)

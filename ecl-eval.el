@@ -184,7 +184,7 @@ the evaluation -- runs there."
 
 ;;; Registration
 
-(defvar ecl-eval-command
+(defconst ecl-eval-command
   `("eval" :stdin optional
     :usage "[CODE...]"
     :fn ,(lambda (&rest args)
