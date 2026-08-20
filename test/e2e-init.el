@@ -6,8 +6,10 @@
 (require 'ecl)
 (require 'ecl-org)
 (require 'ecl-eval)
+(require 'ecl-browse)
 (ecl-register `("version" . ,(lambda ()
                                "Emacs version of the running daemon."
                                (emacs-version))))
 (ecl-register ecl-org-command-group)
 (ecl-register ecl-eval-command)
+(ecl-register ecl-browse-command)

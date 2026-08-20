@@ -283,6 +283,38 @@ expect_exit "eval --help exits 0" 0 $?
 echo "$out" | grep -q "usage: ecl eval \[CODE...\]" \
   && ok "eval --help shows :usage line" || bad "eval --help usage line"
 
+# --- browse-url: the :confirm path ---
+# This daemon has neither a user nor a browser, so we supply both:
+# y-or-n-p answers e2e-allow, and browse-url only records its argument,
+# which is what the assertions read back.
+stub_browser() {
+  emacsclient -s testing -e '(progn
+    (defvar e2e-allow t)
+    (defvar e2e-browsed nil)
+    (defalias (quote browse-url) (lambda (url &rest _) (setq e2e-browsed url)))
+    (defalias (quote y-or-n-p) (lambda (_prompt) e2e-allow))
+    t)' >/dev/null 2>&1
+}
+browsed() { emacsclient -s testing -e 'e2e-browsed' 2>/dev/null; }
+
+stub_browser
+out=$(run browse-url https://example.org/page)
+expect_exit "browse-url confirmed exits 0" 0 $?
+[ "$(browsed)" = '"https://example.org/page"' ] \
+  && ok "browse-url opened the URL" || bad "browse-url opened: $(browsed)"
+echo "$out" | grep -q "browsing https://example.org/page" \
+  && ok "browse-url reports the target" || bad "browse-url output: $out"
+
+emacsclient -s testing -e '(setq e2e-allow nil e2e-browsed nil)' >/dev/null 2>&1
+run browse-url https://example.org/denied >/dev/null 2>&1
+expect_exit "browse-url denied exits 3" 3 $?
+[ "$(browsed)" = "nil" ] \
+  && ok "denial opens nothing" || bad "denied but opened: $(browsed)"
+
+emacsclient -s testing -e '(setq e2e-allow t)' >/dev/null 2>&1
+run browse-url "$WORK/report.html" >/dev/null 2>&1
+expect_exit "target without a scheme exits 2" 2 $?
+
 echo
 echo "e2e: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

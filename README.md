@@ -10,6 +10,9 @@ instead of raw `emacsclient --eval`.
   per-command y-or-n-p confirmation, stdin handshake, pending requests.
 - `ecl-eval.el` — elisp module: `ecl eval` runs code in the daemon, but
   only after a human approves it in an Emacs buffer.
+- `ecl-browse.el` — browser module: `ecl browse-url URL` opens a page
+  through the daemon's `browse-url`, after a y-or-n-p in Emacs. The
+  target must be a URL with a scheme.
 - `ecl-org.el` — org module: heading-addressed queries and edits
   (`ecl org outline|section|append|replace|cut|create|delete|rename|refile|...`).
   Headings are positional path segments; text edits are scoped to a
@@ -30,6 +33,10 @@ instead of raw `emacsclient --eval`.
 (use-package ecl-eval             ; elisp, gated on approval in Emacs
   :after ecl
   :config (ecl-register ecl-eval-command))
+
+(use-package ecl-browse           ; browse-url, gated on y-or-n-p
+  :after ecl
+  :config (ecl-register ecl-browse-command))
 
 (use-package my-local-module      ; your own glue registers the same way
   :after ecl
