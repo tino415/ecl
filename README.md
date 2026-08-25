@@ -19,7 +19,7 @@ instead of raw `emacsclient --eval`.
   section's content, structure has its own commands. Babel blocks are the
   exception: `blocks|block|set-block|run|tangle --block` address a
   `#+name:`, so one block can be rewritten without touching the prose
-  around it.
+  around it. A heading tagged `:noai:` is out of reach — see below.
 
 ## Wiring
 
@@ -45,6 +45,38 @@ instead of raw `emacsclient --eval`.
 
 `ecl-register` adds or replaces a group by name (idempotent), so
 re-evaluating a module's block updates the table.
+
+## Headings the agent does not get
+
+A heading tagged with one of `ecl-org-private-tags` — `noai`, `crypt`,
+`private`, `secret` by default, matched case-insensitively — is refused by
+every `ecl org` command, reads and edits alike. The tag is inherited, so it
+covers the subtree under it, and `#+FILETAGS: :noai:` covers a whole file.
+`ecl org private-tags` prints the current list.
+
+```org
+* Bank                              :noai:
+** Card                                        <- covered, by inheritance
+```
+
+```sh
+ecl org outline ~/org/todo.org
+# * Projects
+# * <hidden :noai:>              <- place kept, title and children not
+ecl org section ~/org/todo.org Bank
+# "Bank" is tagged noai; not available to agents    (exit 2)
+```
+
+Refusal is wider than the obvious reads: a public parent will not hand out a
+private child via `section --subtree`, `delete` or `refile`; `blocks` omits
+blocks under a private heading; and `tangle` declines a scope containing one
+rather than writing its body to a file. Adding the tag is still allowed
+(`ecl org create --tag noai ...`) — removing it is not. `crypt` is in the
+defaults because an org-crypt subtree sits decrypted in the daemon's buffer,
+which is what these commands read.
+
+This gates the sanctioned tool path, not the file. Anything that can run
+`cat` on the org file reads it regardless; for that, deny the file.
 
 ## Approving elisp
 

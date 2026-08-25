@@ -212,6 +212,24 @@ echo "$out" | grep -q '^\*\* API /v2/payouts endpoint' \
 run org refile --to Nowhere "$F" Notes "API /v2/payouts endpoint" >/dev/null 2>&1
 expect_exit "refile bad dest exits 2" 2 $?
 
+# --- private tags: refused at the client, hidden in the outline ---
+run org create --tag noai "$F" Notes Secret >/dev/null <<'EOF'
+Sensitive body.
+EOF
+expect_exit "create a private heading" 0 $?
+out=$(run org section "$F" Notes Secret 2>&1)
+expect_exit "private section exits 2" 2 $?
+echo "$out" | grep -q "not available to agents" \
+  && ok "refusal reaches the caller" || bad "refusal message: $out"
+out=$(run org outline "$F")
+echo "$out" | grep -q "<hidden :noai:>" \
+  && ok "outline shows the placeholder" || bad "outline placeholder: $out"
+echo "$out" | grep -q "Secret" \
+  && bad "outline leaked the private title" || ok "outline hides the title"
+out=$(run org private-tags)
+echo "$out" | grep -q "^noai$" \
+  && ok "private-tags lists the defaults" || bad "private-tags: $out"
+
 # --- miscount diagnostics ---
 out=$(run org property "$F" Projects Nope Owner bob 2>&1)
 expect_exit "bad path exits 2" 2 $?

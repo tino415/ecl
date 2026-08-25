@@ -19,6 +19,11 @@
 ;; retitled -- and so one block can be rewritten without touching the
 ;; prose around it.
 ;;
+;; A heading tagged with one of `ecl-org-private-tags' is out of reach of
+;; every command here, reads and edits alike, and shows in the outline as
+;; <hidden :TAG:>.  That gates this tool path only -- it is not a
+;; boundary; anything that can read the file directly still can.
+;;
 ;; Register the command group from your init file:
 ;;   (use-package ecl-org
 ;;     :after ecl
@@ -36,6 +41,64 @@
 (defun ecl-org--file (file)
   "Expand FILE against the ecl client's cwd when dispatched via ecl."
   (expand-file-name file (or (bound-and-true-p ecl-directory) default-directory)))
+
+(defvar ecl-org-private-tags '("noai" "crypt" "private" "secret")
+  "Tags that put a heading out of reach of `ecl org'.
+Matched case-insensitively and inherited, so the tag covers the whole
+subtree under it, and a #+FILETAGS: entry covers the whole file.  Nothing
+here reads or edits such a heading -- only a human working in Emacs does.
+`crypt' is in the list because an org-crypt subtree sits decrypted in the
+daemon's buffer, which is what these commands read.
+
+This gates the sanctioned tool path, not the file: whoever can run
+`cat' on the org file reads it regardless.")
+
+(defun ecl-org--match-private (tags)
+  "The first of TAGS that `ecl-org-private-tags' lists, or nil."
+  (seq-find (lambda (tag) (member-ignore-case tag ecl-org-private-tags)) tags))
+
+(defun ecl-org--private-tag ()
+  "The private tag covering point, or nil; nil above the first heading.
+Tag inheritance is forced on rather than read from the daemon's settings,
+so an ancestor's tag counts wherever point is."
+  (unless (org-before-first-heading-p)
+    (let ((org-use-tag-inheritance t)
+          (org-tags-exclude-from-inheritance nil))
+      (ecl-org--match-private
+       (save-excursion (org-back-to-heading t) (org-get-tags))))))
+
+(defun ecl-org--check-private (what)
+  "Signal when point is covered by a private tag; WHAT names it to the caller."
+  (when-let ((tag (ecl-org--private-tag)))
+    (error "%s is tagged %s; not available to agents" what tag)))
+
+(defun ecl-org--check-private-region (beg end what &optional hint)
+  "Signal when any heading between BEG and END carries a private tag.
+Guards the commands that take a whole subtree or a whole file at once,
+where no path is resolved to the private heading itself -- so a public
+parent cannot be used to reach a private child.  The heading's title stays
+out of the message, since hiding it is the point; HINT is appended for
+commands that have a narrower alternative to suggest."
+  (save-excursion
+    (goto-char beg)
+    (unless (org-at-heading-p) (outline-next-heading))
+    (while (and (org-at-heading-p) (< (point) end))
+      (when-let ((tag (ecl-org--private-tag)))
+        (error "%s contains a heading tagged %s; not available to agents%s"
+               what tag (or hint "")))
+      (outline-next-heading))))
+
+(defun ecl-org--check-private-file (file)
+  "Signal when the current buffer's #+FILETAGS: put FILE out of reach.
+Headings inherit those tags, so this only has to be called where a command
+reaches content without resolving a heading -- outline, blocks, tangle."
+  (when-let ((tag (ecl-org--match-private
+                   (mapcar #'substring-no-properties org-file-tags))))
+    (error "%s is tagged %s; not available to agents" file tag)))
+
+(defun ecl-org--path-label (segments)
+  "SEGMENTS as a quoted outline path, for messages."
+  (format "%S" (string-join segments " > ")))
 
 (defun ecl-org--args (args spec nback usage &optional min-segs)
   "Parse ARGS as [FLAGS] FILE SEG... BACK-DATA, per the ecl org grammar.
@@ -80,7 +143,11 @@ its values in a list, in order of appearance."
 Resolution is progressive: on failure the error names the resolved prefix
 and the missing child, so a mis-split argv is visible.  TRAILING, when
 given, is appended to the error -- callers with fixed back data use it to
-show which arguments were NOT taken as path segments."
+show which arguments were NOT taken as path segments.
+
+Every path-addressed command comes through here, so this is also where a
+heading tagged with one of `ecl-org-private-tags' is refused; inheritance
+means one check at the resolved position covers its ancestors too."
   (let (found pos)
     (dolist (seg segments)
       (let ((path (append found (list seg))))
@@ -93,6 +160,10 @@ show which arguments were NOT taken as path segments."
                     "the top level")
                   (or trailing ""))))
         (setq found path)))
+    (when pos
+      (save-excursion
+        (goto-char pos)
+        (ecl-org--check-private (ecl-org--path-label segments))))
     pos))
 
 (defun ecl-org--content-region ()
@@ -111,20 +182,36 @@ structure has its own commands."
       (cons beg end))))
 
 (defun ecl-org-outline (file)
-  "Return outline of FILE: one heading per line as `STARS [TODO ]TITLE'."
+  "Return outline of FILE: one heading per line as `STARS [TODO ]TITLE'.
+A subtree tagged with one of `ecl-org-private-tags' collapses to a single
+`STARS <hidden :TAG:>' line: neither its title nor its children are
+listed, but its place in the tree is, so the gap is not mistaken for an
+absence."
   (with-current-buffer (find-file-noselect (ecl-org--file file))
     (org-with-wide-buffer
-     (let (lines)
+     (ecl-org--check-private-file file)
+     ;; The scanner caches each entry's inherited tags and `org-get-tags'
+     ;; hands that cache back, so the inheritance switches have to be on
+     ;; around the scan itself, not only inside `ecl-org--private-tag'.
+     (let ((org-use-tag-inheritance t)
+           (org-tags-exclude-from-inheritance nil)
+           lines)
        (org-map-entries
         (lambda ()
           (let* ((c (org-heading-components))
                  (level (nth 0 c))
                  (todo  (nth 2 c))
-                 (title (nth 4 c)))
+                 (title (nth 4 c))
+                 (private (ecl-org--private-tag)))
             (push (concat (make-string level ?*)
-                          (when todo (concat " " todo))
-                          " " title)
-                  lines))))
+                          (if private
+                              (format " <hidden :%s:>" private)
+                            (concat (when todo (concat " " todo))
+                                    " " title)))
+                  lines)
+            (when private
+              (setq org-map-continue-from
+                    (save-excursion (org-end-of-subtree t t) (point)))))))
        (mapconcat #'identity (nreverse lines) "\n")))))
 
 (defun ecl-org-section (file segments &optional subtree)
@@ -137,12 +224,16 @@ always ends in a newline."
   (with-current-buffer (find-file-noselect (ecl-org--file file))
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
-     (let* ((bounds (if subtree
-                        (cons (line-beginning-position)
-                              (save-excursion (org-end-of-subtree t t) (point)))
-                      (ecl-org--content-region)))
-            (text (buffer-substring-no-properties (car bounds) (cdr bounds))))
-       (if (string-suffix-p "\n" text) text (concat text "\n"))))))
+     (let ((bounds (if subtree
+                       (cons (line-beginning-position)
+                             (save-excursion (org-end-of-subtree t t) (point)))
+                     (ecl-org--content-region))))
+       ;; A private child would ride out inside its public parent's subtree.
+       (when subtree
+         (ecl-org--check-private-region (car bounds) (cdr bounds)
+                                        (ecl-org--path-label segments)))
+       (let ((text (buffer-substring-no-properties (car bounds) (cdr bounds))))
+         (if (string-suffix-p "\n" text) text (concat text "\n")))))))
 
 (defun ecl-org-append-section (file segments content)
   "Append CONTENT to the end of the content of the heading at SEGMENTS in FILE.
@@ -162,11 +253,17 @@ CONTENT should include its own leading newline.  Saves the buffer."
 (defun ecl-org--goto-block (name file)
   "Move point to the babel src block named NAME (via #+name:) in FILE.
 FILE is only used in the error message; the block is looked up in the
-current buffer.  Returns the position."
+current buffer.  Returns the position.
+
+The name-addressed commands (block, set-block, run, tangle --block) all
+land here, so this is where a block inside a private subtree is refused."
+  (ecl-org--check-private-file file)
   (let ((pos (org-babel-find-named-block name)))
     (unless pos
       (error "No src block named '%s' in %s (see: ecl org blocks)" name file))
-    (goto-char pos)))
+    (goto-char pos)
+    (ecl-org--check-private (format "block '%s'" name))
+    pos))
 
 (defun ecl-org-run (file name)
   "Execute the babel src block named NAME (via #+name:) in FILE.
@@ -230,21 +327,32 @@ the buffer and returns a confirmation string."
 With BLOCK, tangle only the src block named BLOCK (via #+name:).
 With SEGMENTS (an outline path as a list), tangle every block in that
 subtree.  With neither, tangle the whole file.  BLOCK and SEGMENTS are
-mutually exclusive."
+mutually exclusive.
+
+Tangling writes block bodies out to files, so a scope holding a heading
+tagged with one of `ecl-org-private-tags' is refused rather than narrowed
+around: what to tangle instead is the caller's call, not ours."
   (when (and block segments)
     (error "Give only one of --block / path segments"))
   (with-current-buffer (find-file-noselect (ecl-org--file file))
     (org-with-wide-buffer
      (save-restriction
-       (cond
-        (block
-         (ecl-org--goto-block block file)
-         (org-babel-tangle '(4)))
-        (segments
-         (goto-char (ecl-org--find-olp segments))
-         (org-narrow-to-subtree)
-         (org-babel-tangle))
-        (t (org-babel-tangle)))))))
+       (let ((hint " (tangle one --block, or a subtree without it)"))
+         (cond
+          (block
+           (ecl-org--goto-block block file)
+           (org-babel-tangle '(4)))
+          (segments
+           (goto-char (ecl-org--find-olp segments))
+           (ecl-org--check-private-region
+            (point) (save-excursion (org-end-of-subtree t t) (point))
+            (ecl-org--path-label segments) hint)
+           (org-narrow-to-subtree)
+           (org-babel-tangle))
+          (t
+           (ecl-org--check-private-file file)
+           (ecl-org--check-private-region (point-min) (point-max) file hint)
+           (org-babel-tangle))))))))
 
 (defun ecl-org-attach (file segments source)
   "Attach SOURCE to the heading at SEGMENTS in FILE, using Org's default method.
@@ -288,13 +396,19 @@ Returns nil when the heading has no attachment directory."
 Columns per row: NAME, LANG (\"call:CALLEE\" for a #+call: line), and the
 block's resolved :tangle target (or - when it is not tangled).  NAME is
 what `ecl org run' and `ecl org tangle --block' address; anonymous blocks
-are omitted since they cannot be named on the command line."
+are omitted since they cannot be named on the command line, and so are
+blocks under a heading tagged with one of `ecl-org-private-tags' -- the
+name and the tangle target say enough on their own."
   (with-current-buffer (find-file-noselect (ecl-org--file file))
     (org-with-wide-buffer
+     (ecl-org--check-private-file file)
      (let ((rows
             (org-element-map (org-element-parse-buffer) '(src-block babel-call)
               (lambda (el)
-                (when-let ((name (org-element-property :name el)))
+                (when-let ((name (org-element-property :name el))
+                           ((not (save-excursion
+                                   (goto-char (org-element-property :begin el))
+                                   (ecl-org--private-tag)))))
                   (pcase (org-element-type el)
                     ('src-block
                      (let* ((info (org-babel-get-src-block-info 'no-eval el))
@@ -594,11 +708,20 @@ BODY leaves it untouched; clearing is only via CLEAR-BODY."
      (dolist (kv properties)
        (unless (string-search "=" kv)
          (error "--property needs K=V, got %S" kv)))
+     (ecl-org--check-private-file file)
      (let ((n (length segments)) (i 0) (prefix nil) (created nil) pos)
        (while (< i n)
          (let* ((seg (nth i segments))
                 (path (append prefix (list seg)))
                 (found (condition-case nil (org-find-olp path t) (error nil))))
+           ;; This resolves paths itself instead of through
+           ;; `ecl-org--find-olp', so the private check is repeated here --
+           ;; on every prefix, which also refuses a new child under a
+           ;; private parent.
+           (when found
+             (save-excursion
+               (goto-char found)
+               (ecl-org--check-private (ecl-org--path-label path))))
            (cond
             (found (setq pos found))
             ((or parents (= i (1- n)))
@@ -640,10 +763,15 @@ BODY leaves it untouched; clearing is only via CLEAR-BODY."
 (defun ecl-org-delete (file segments)
   "Remove the entire subtree at SEGMENTS in FILE; save.
 The subtree is cut, so it stays recoverable from the kill ring of the
-running Emacs session."
+running Emacs session.  A subtree holding a heading tagged with one of
+`ecl-org-private-tags' is refused: it cannot be read here, so it cannot be
+destroyed here either."
   (with-current-buffer (find-file-noselect (ecl-org--file file))
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
+     (ecl-org--check-private-region
+      (point) (save-excursion (org-end-of-subtree t t) (point))
+      (ecl-org--path-label segments))
      (org-cut-subtree)
      (save-buffer))
     nil))
@@ -668,7 +796,8 @@ when given, is the destination file (default FILE), so moves may cross
 files.  Honors `org-log-refile' by driving Org's log note directly (the
 interactive post-command hook never fires under `emacsclient', same
 technique as `ecl-org-set-status').  Saves both buffers.  Returns a
-confirmation string."
+confirmation string.  A subtree holding a heading tagged with one of
+`ecl-org-private-tags' does not move."
   (let* ((src (ecl-org--file file))
          (dest-buf (find-file-noselect (if to-file (ecl-org--file to-file) src)))
          (dest-pos
@@ -680,6 +809,9 @@ confirmation string."
     (with-current-buffer (find-file-noselect src)
       (org-with-wide-buffer
        (goto-char (ecl-org--find-olp segments))
+       (ecl-org--check-private-region
+        (point) (save-excursion (org-end-of-subtree t t) (point))
+        (ecl-org--path-label segments))
        (let ((log org-log-refile)
              ;; Refile with Org's own logging off: `org-add-log-setup'
              ;; defers the entry via `post-command-hook', which never
@@ -1045,7 +1177,13 @@ With --inherit, fall back to the nearest ancestor that sets NAME."
     ("set-todo-keywords" . ecl-org-set-todo-keywords)
     ("agenda-files" . ,(lambda ()
                          "List the files org-agenda scans."
-                         (bound-and-true-p org-agenda-files))))
+                         (bound-and-true-p org-agenda-files)))
+    ("private-tags" . ,(lambda ()
+                         "List the tags that put a heading out of reach here.
+A heading carrying one -- or inheriting one from an ancestor or from
+#+FILETAGS: -- is neither readable nor editable through `ecl org'.
+It shows in `ecl org outline' as <hidden :TAG:>."
+                         (string-join ecl-org-private-tags "\n"))))
   "Command entries of the `ecl org' group, in listing order.")
 
 (defconst ecl-org-command-group

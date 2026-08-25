@@ -40,17 +40,54 @@ Prose before the block.
 Prose after the block.
 ")
 
-(defmacro ecl-org-test--with-file (var &rest body)
-  "Bind VAR to a temp org file with the fixture content around BODY."
-  (declare (indent 1))
-  `(let ((,var (make-temp-file "ecl-org-test-" nil ".org"
-                               ecl-org-test--fixture)))
+(defvar ecl-org-test--private-fixture
+  "#+TODO: TODO(t!) WAITING(w@) | DONE(d!)
+
+* Public
+Public body.
+** Secret :noai:
+:PROPERTIES:
+:Key: hunter2
+:END:
+Sensitive body.
+*** Deeper
+Deeper still.
+* Vault :CRYPT:
+Encrypted-in-buffer body.
+
+#+name: vault-block
+#+begin_src text :tangle vault.out
+secret payload
+#+end_src
+* Open
+Open body.
+
+#+name: open-block
+#+begin_src text :results output
+echo hi
+#+end_src
+")
+
+(defmacro ecl-org-test--with-content (var content &rest body)
+  "Bind VAR to a temp org file holding CONTENT around BODY."
+  (declare (indent 2))
+  `(let ((,var (make-temp-file "ecl-org-test-" nil ".org" ,content)))
      (unwind-protect
          (progn ,@body)
        (when-let ((b (find-buffer-visiting ,var)))
          (with-current-buffer b (set-buffer-modified-p nil))
          (let ((kill-buffer-query-functions nil)) (kill-buffer b)))
        (delete-file ,var))))
+
+(defmacro ecl-org-test--with-file (var &rest body)
+  "Bind VAR to a temp org file with the fixture content around BODY."
+  (declare (indent 1))
+  `(ecl-org-test--with-content ,var ecl-org-test--fixture ,@body))
+
+(defmacro ecl-org-test--with-private-file (var &rest body)
+  "Bind VAR to a temp org file with the private-tag fixture around BODY."
+  (declare (indent 1))
+  `(ecl-org-test--with-content ,var ecl-org-test--private-fixture ,@body))
 
 (defun ecl-org-test--file-string (file)
   "Return FILE's on-disk content."
@@ -478,6 +515,93 @@ Prose after the block.
             (should (file-exists-p out))
             (should-error (ecl-org-tangle f "hello" '("Blocks"))))
         (when (file-exists-p out) (delete-file out))))))
+
+;;; private tags
+
+(ert-deftest ecl-org-test-private-heading-refuses-reads ()
+  (ecl-org-test--with-private-file f
+    (should-error (ecl-org-section f '("Public" "Secret")))
+    (should-error (ecl-org-get-properties f '("Public" "Secret")))
+    (should-error (ecl-org-get-property f '("Public" "Secret") "Key"))))
+
+(ert-deftest ecl-org-test-private-tag-is-inherited-by-children ()
+  (ecl-org-test--with-private-file f
+    (should-error (ecl-org-section f '("Public" "Secret" "Deeper")))))
+
+(ert-deftest ecl-org-test-private-heading-refuses-edits-and-writes-nothing ()
+  (ecl-org-test--with-private-file f
+    (let ((before (ecl-org-test--file-string f))
+          (path '("Public" "Secret")))
+      (should-error (ecl-org-append-section f path "\nmore\n"))
+      (should-error (ecl-org-replace-section f path '(("Sensitive" . "x"))))
+      (should-error (ecl-org-cut-section f path '("Sensitive body.")))
+      (should-error (ecl-org-set-status f path "DONE"))
+      (should-error (ecl-org-add-note f path "a note"))
+      (should-error (ecl-org-set-property f path "Key" "leaked"))
+      (should-error (ecl-org-rename f path "Renamed"))
+      (should-error (ecl-org-delete f path))
+      (should-error (ecl-org-create f path nil nil nil nil nil nil "new body"))
+      (should (equal (ecl-org-test--file-string f) before)))))
+
+(ert-deftest ecl-org-test-private-child-guards-its-public-parent-subtree ()
+  "A public parent must not be usable as a handle on the private child."
+  (ecl-org-test--with-private-file f
+    (should (string-search "Public body" (ecl-org-section f '("Public"))))
+    (should-error (ecl-org-section f '("Public") t))
+    (should-error (ecl-org-delete f '("Public")))
+    (should-error (ecl-org-refile f '("Public") nil '("Open")))))
+
+(ert-deftest ecl-org-test-private-outline-shows-a-placeholder ()
+  (ecl-org-test--with-private-file f
+    (let ((o (ecl-org-outline f)))
+      (should (string-search "* Public" o))
+      (should (string-search "** <hidden :noai:>" o))
+      (should (string-search "* <hidden :CRYPT:>" o))
+      (should (string-search "* Open" o))
+      (should-not (string-search "Secret" o))
+      (should-not (string-search "Deeper" o)))))
+
+(ert-deftest ecl-org-test-private-filetags-cover-the-whole-file ()
+  (ecl-org-test--with-content f "#+FILETAGS: :noai:\n\n* Anything\nBody.\n"
+    (should-error (ecl-org-outline f))
+    (should-error (ecl-org-blocks f))
+    (should-error (ecl-org-section f '("Anything")))
+    (should-error (ecl-org-tangle f nil nil))))
+
+(ert-deftest ecl-org-test-private-blocks-are-hidden-and-unaddressable ()
+  (ecl-org-test--with-private-file f
+    (let ((listing (ecl-org-blocks f)))
+      (should (string-search "open-block" listing))
+      (should-not (string-search "vault-block" listing))
+      (should-not (string-search "vault.out" listing)))
+    (should-error (ecl-org-block f "vault-block"))
+    (should-error (ecl-org-set-block f "vault-block" "leaked\n"))
+    (should-error (ecl-org-run f "vault-block"))
+    (should-error (ecl-org-tangle f "vault-block" nil))
+    (should (string-search "echo hi" (ecl-org-block f "open-block")))))
+
+(ert-deftest ecl-org-test-private-heading-refuses-wider-tangle-scopes ()
+  (ecl-org-test--with-private-file f
+    (should-error (ecl-org-tangle f nil nil))
+    (should-error (ecl-org-tangle f nil '("Public")))
+    (should-not (ecl-org-tangle f nil '("Open")))))
+
+(ert-deftest ecl-org-test-private-tags-are-a-configurable-case-insensitive-list ()
+  (ecl-org-test--with-private-file f
+    (should-error (ecl-org-section f '("Vault")))
+    (let ((ecl-org-private-tags '("noai")))
+      (should (string-search "Encrypted" (ecl-org-section f '("Vault")))))))
+
+(ert-deftest ecl-org-test-public-headings-stay-reachable-and-taggable ()
+  "Marking a heading private is still allowed; unmarking it is not."
+  (ecl-org-test--with-private-file f
+    (should (string-search "Open body" (ecl-org-section f '("Open"))))
+    (ecl-org-append-section f '("Open") "\nappended\n")
+    (should (string-search "appended" (ecl-org-section f '("Open"))))
+    (should (equal (ecl-org-create f '("Open" "Child")
+                                   nil nil '("noai") nil nil nil "")
+                   "created Open > Child"))
+    (should-error (ecl-org-section f '("Open" "Child")))))
 
 ;;; reload
 
