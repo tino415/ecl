@@ -26,6 +26,12 @@
             ("ask" . ,(lambda ()
                         "Wait for a human."
                         (ecl-pending-start (lambda (_id) #'ignore))))
+            ("prompt-y" . ,(lambda ()
+                             "Ask y-or-n-p with nobody there."
+                             (if (y-or-n-p "well? ") "yes" "no")))
+            ("prompt-yes" . ,(lambda ()
+                               "Ask yes-or-no-p with nobody there."
+                               (if (yes-or-no-p "well? ") "yes" "no")))
             ("wrapped" :usage "[--x] A B"
              :fn ,(lambda (&rest args) "Wrapper." (string-join args ",")))
             ("grp" :help "A group"
@@ -54,6 +60,32 @@
    (pcase (ecl-dispatch '("boom"))
      (`(ecl-error error ,msg) (should (string-search "kaput" msg)))
      (other (ert-fail (format "unexpected: %S" other))))))
+
+;;; Prompts
+;;
+;; The daemon is single-threaded: a command that reaches the minibuffer
+;; with no human there stops it answering anything at all, and killing
+;; the client does not free it.  These pin the trap that turns the
+;; question into an error instead.
+
+(ert-deftest ecl-test-y-or-n-p-in-a-command-errors ()
+  (ecl-test--with-table
+   (pcase (ecl-dispatch '("prompt-y"))
+     (`(ecl-error error ,msg) (should (string-search "nothing here can answer" msg)))
+     (other (ert-fail (format "unexpected: %S" other))))))
+
+(ert-deftest ecl-test-yes-or-no-p-in-a-command-errors ()
+  (ecl-test--with-table
+   (pcase (ecl-dispatch '("prompt-yes"))
+     (`(ecl-error error ,msg) (should (string-search "well?" msg)))
+     (other (ert-fail (format "unexpected: %S" other))))))
+
+(ert-deftest ecl-test-prompt-trap-is-scoped-to-the-command ()
+  "The trap must not leak past the dispatch that installed it."
+  (ecl-test--with-table
+   (let ((before (symbol-function 'y-or-n-p)))
+     (ecl-dispatch '("prompt-y"))
+     (should (eq (symbol-function 'y-or-n-p) before)))))
 
 ;;; Help
 
@@ -137,6 +169,17 @@
      (pcase (ecl-dispatch '("danger"))
        (`(ecl-error denied ,_) t)
        (other (ert-fail (format "unexpected: %S" other)))))))
+
+(ert-deftest ecl-test-confirm-is-asked-outside-the-prompt-trap ()
+  "The one sanctioned question must still reach the user."
+  (ecl-test--with-table
+   (let ((trapped 'unset))
+     (cl-letf (((symbol-function 'ecl--confirm)
+                (lambda (_path _args)
+                  (setq trapped (eq (symbol-function 'y-or-n-p)
+                                    #'ecl--prompt-trap)))))
+       (ecl-dispatch '("danger"))
+       (should-not trapped)))))
 
 ;;; Pending requests
 

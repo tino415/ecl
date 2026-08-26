@@ -236,6 +236,47 @@ expect_exit "bad path exits 2" 2 $?
 echo "$out" | grep -q "taken as NAME VALUE" \
   && ok "miscount hint printed" || bad "miscount hint: $out"
 
+# --- the file moves underneath the daemon ---
+# The regression that matters: `find-file-noselect' and `basic-save-buffer'
+# both ask about a file that changed on disk, and a single-threaded daemon
+# waiting on a question nobody can answer stops serving anything at all --
+# `(emacs-pid)' included, with killing the client no help.  So every step
+# here is bounded, and the last two assertions are about the daemon still
+# being there rather than about the command.
+S="$WORK/moved.org"
+printf '* Notes\nbefore\n' > "$S"
+run org section "$S" Notes >/dev/null 2>&1
+printf '* Notes\nafter\n' > "$S"          # git checkout, rebase, other editor
+
+out=$(run org section "$S" Notes 2>&1)
+expect_exit "read after the file moved exits 0" 0 $?
+[ "$out" = "after" ] \
+  && ok "clean buffer is reread from disk" || bad "reread gave: $out"
+
+printf '\nappended\n' | run org append "$S" Notes >/dev/null 2>&1
+expect_exit "write after the file moved exits 0" 0 $?
+grep -q '^after$' "$S" && grep -q '^appended$' "$S" \
+  && ok "write builds on the disk version" || bad "write clobbered: $(cat "$S")"
+
+# Both sides changed: refuse, and leave the conflict for Emacs.
+printf '* Notes\nbase\n' > "$S"
+run org section "$S" Notes >/dev/null 2>&1
+emacsclient -s testing -e "(with-current-buffer (find-buffer-visiting \"$S\")
+  (goto-char (point-max)) (insert \"unsaved\\n\") (buffer-modified-p))" >/dev/null 2>&1
+printf '* Notes\ndisk moved on\n' > "$S"
+out=$(printf '\nx\n' | run org append "$S" Notes 2>&1)
+expect_exit "conflicting write exits 2" 2 $?
+echo "$out" | grep -q "unsaved" \
+  && ok "conflict names the unsaved buffer" || bad "conflict message: $out"
+grep -q '^disk moved on$' "$S" && ! grep -q '^x$' "$S" \
+  && ok "conflicting write leaves the file alone" || bad "file changed: $(cat "$S")"
+
+# Nothing above may have cost us the daemon.
+[ -n "$(timeout 5 emacsclient -s testing -e '(emacs-pid)' 2>/dev/null)" ] \
+  && ok "daemon still answers after a stale file" || bad "daemon stopped answering"
+run org outline "$F" >/dev/null 2>&1
+expect_exit "an unrelated file still works" 0 $?
+
 # --- eval: the client waits for a human ---
 # No user in this daemon, so we play the user over a second emacsclient:
 # wait for the review buffer to appear, then run the real commands in it.

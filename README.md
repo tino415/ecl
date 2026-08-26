@@ -8,6 +8,8 @@ instead of raw `emacsclient --eval`.
   formats the reply. `ECL_SERVER` selects the daemon (default `server`).
 - `ecl.el` — framework: command tree (`ecl-commands`), dispatch, help,
   per-command y-or-n-p confirmation, stdin handshake, pending requests.
+  A yes/no prompt reached by a running command becomes an error — see
+  below.
 - `ecl-eval.el` — elisp module: `ecl eval` runs code in the daemon, but
   only after a human approves it in an Emacs buffer.
 - `ecl-browse.el` — browser module: `ecl browse-url URL` opens a page
@@ -77,6 +79,42 @@ which is what these commands read.
 
 This gates the sanctioned tool path, not the file. Anything that can run
 `cat` on the org file reads it regardless; for that, deny the file.
+
+## Questions nobody can answer
+
+Emacs is single-threaded. A command that reaches `y-or-n-p` with only a
+pipe on the other end stops the daemon answering *anything* — `(emacs-pid)`
+included — and killing the client does not free it. So every yes/no prompt
+raised while a command runs is turned into an error instead. The one
+exception is the `:confirm` question, which is asked before the command
+starts, with the caller waiting on the answer.
+
+The prompt this actually rescues is a file that moved under the daemon —
+a `git checkout`, a rebase, another editor:
+
+```sh
+ecl org section ~/org/todo.org Notes   # daemon visits the file
+git checkout main                      # todo.org changes on disk
+ecl org append ~/org/todo.org Notes    # would have wedged the daemon
+```
+
+`ecl org` settles that before Emacs can ask. A buffer with no unsaved
+changes is simply reread — there is nothing to lose, and refusing would
+block every command until someone reverted it by hand. A buffer that *is*
+modified holds a second version, and picking a side would throw one away:
+
+```sh
+ecl org append ~/org/todo.org Notes <<< x
+# ecl: ~/org/todo.org changed on disk while the Emacs buffer has unsaved
+#      changes; resolve it in Emacs first          (exit 2)
+```
+
+Nothing is written and the buffer is left alone, so Emacs still offers its
+own diff on the next visit. That resolution is a human's; these commands
+only decline to pre-empt it.
+
+Note that a write of any kind saves the whole buffer, so an edit to one
+heading also flushes unsaved changes elsewhere in the file.
 
 ## Approving elisp
 

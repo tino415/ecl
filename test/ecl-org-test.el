@@ -603,6 +603,51 @@ echo hi
                    "created Open > Child"))
     (should-error (ecl-org-section f '("Open" "Child")))))
 
+;;; ecl-org--buffer  (the file moved underneath the daemon)
+
+(defun ecl-org-test--diverge (file content)
+  "Write CONTENT to FILE behind the back of the buffer visiting it.
+The recorded modtime is pushed into the past rather than slept past, so
+the test does not depend on the filesystem's timestamp granularity."
+  (write-region content nil file nil 'silent)
+  (with-current-buffer (find-buffer-visiting file)
+    (set-visited-file-modtime (time-subtract nil 100))))
+
+(ert-deftest ecl-org-test-buffer-rereads-a-clean-buffer ()
+  "Nothing to lose in the buffer, so take what is on disk."
+  (ecl-org-test--with-file f
+    (should (equal (ecl-org-section f '("Notes")) "Loose note.\nSecond note.\n"))
+    (ecl-org-test--diverge f "* Notes\nRewritten on disk.\n")
+    (should (equal (ecl-org-section f '("Notes")) "Rewritten on disk.\n"))))
+
+(ert-deftest ecl-org-test-buffer-write-lands-on-the-reread-file ()
+  "A write after the reread must build on the disk version, not replace it."
+  (ecl-org-test--with-file f
+    (ecl-org-section f '("Notes"))
+    (ecl-org-test--diverge f "* Notes\nRewritten on disk.\n")
+    (ecl-org-append-section f '("Notes") "\nAppended.\n")
+    (should (equal (ecl-org-test--file-string f)
+                   "* Notes\nRewritten on disk.\n\nAppended.\n"))))
+
+(ert-deftest ecl-org-test-buffer-refuses-when-both-sides-changed ()
+  "Two versions and no way to pick: refuse, and leave both where they are.
+Reads are refused too -- handing out the buffer would report content that
+is not what the next command would edit."
+  (ecl-org-test--with-file f
+    (ecl-org-section f '("Notes"))
+    (with-current-buffer (find-buffer-visiting f)
+      (goto-char (point-max))
+      (insert "* Unsaved\nstill in Emacs only.\n"))
+    (ecl-org-test--diverge f "* Notes\nDisk moved on.\n")
+    (dolist (thunk (list (lambda () (ecl-org-section f '("Notes")))
+                         (lambda () (ecl-org-outline f))
+                         (lambda () (ecl-org-append-section f '("Notes") "\nx\n"))
+                         (lambda () (ecl-org-delete f '("Notes")))))
+      (should (string-search "unsaved" (cadr (should-error (funcall thunk))))))
+    ;; The conflict survives intact, for the user to resolve in Emacs.
+    (should (equal (ecl-org-test--file-string f) "* Notes\nDisk moved on.\n"))
+    (should (buffer-modified-p (find-buffer-visiting f)))))
+
 ;;; reload
 
 (ert-deftest ecl-org-test-reload-rebuilds-the-command-table ()

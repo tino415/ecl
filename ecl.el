@@ -47,6 +47,11 @@
 ;; `ecl-directory' carries the client's working directory for
 ;; resolving relative file arguments.
 ;;
+;; `ecl--confirm' is the only question a command may put to the user
+;; synchronously.  Every other yes/no prompt reached while a command
+;; runs is turned into an error, because nothing can answer it and a
+;; single-threaded daemon waiting on one answers nothing at all.
+;;
 ;; A command that needs an unhurried human decision (rather than the
 ;; quick y-or-n-p of :confirm) must not block the dispatch: it puts its
 ;; UI up, returns (ecl-pending ID) from `ecl-pending-start', and the
@@ -56,6 +61,8 @@
 ;; request waits.  See ecl-eval.el for the approval-buffer example.
 
 ;;; Code:
+
+(require 'cl-lib)
 
 (define-error 'ecl-denied "ecl call denied")
 
@@ -220,6 +227,29 @@ ignored."
       (ignore-errors (funcall (plist-get req :cancel)))))
   nil)
 
+;;; Prompts
+;;
+;; `ecl--confirm' above is the only sanctioned question, and it is asked
+;; before the command runs.  Anything a command reaches on its own --
+;; `find-file-noselect' offering to reread a file that changed on disk,
+;; `basic-save-buffer' offering to overwrite it -- has no one to answer
+;; it: the caller is a pipe.  Emacs is single-threaded, so the daemon
+;; then stops answering everything, `(emacs-pid)' included, and killing
+;; the client does not free it.  Turning the question into an error
+;; costs the one command and keeps the daemon.
+
+(defun ecl--prompt-trap (prompt &rest _)
+  "Refuse PROMPT instead of asking it.  See `ecl--without-prompts'."
+  (error "Command tried to ask in Emacs, and nothing here can answer: %s"
+         prompt))
+
+(defmacro ecl--without-prompts (&rest body)
+  "Run BODY with the yes/no prompts signalling instead of blocking."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'y-or-n-p) #'ecl--prompt-trap)
+             ((symbol-function 'yes-or-no-p) #'ecl--prompt-trap))
+     ,@body))
+
 (defun ecl--run (plist args path confirm)
   (if (member "--help" args)
       (list 'ecl-help (ecl--command-help plist path confirm))
@@ -238,7 +268,9 @@ ignored."
         (list 'ecl-error 'usage (ecl--command-help plist path confirm)))
        (t
         (when confirm (ecl--confirm path args))
-        (let ((value (apply fn args)))
+        ;; The confirmation above is deliberately outside this: it is the
+        ;; one prompt with a caller waiting on the answer.
+        (let ((value (ecl--without-prompts (apply fn args))))
           ;; A command that put a decision to the user answers with its
           ;; own marker; hand it to the client as-is so it starts polling
           ;; instead of printing it as a value.

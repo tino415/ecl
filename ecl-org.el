@@ -42,6 +42,33 @@
   "Expand FILE against the ecl client's cwd when dispatched via ecl."
   (expand-file-name file (or (bound-and-true-p ecl-directory) default-directory)))
 
+(defun ecl-org--buffer (file)
+  "Return the buffer visiting FILE, in step with what is on disk.
+Every command here goes through this, so it is the one place that has to
+cope with the file having moved underneath the daemon -- a git checkout,
+a rebase, another editor.
+
+A buffer holding no unsaved changes is simply reverted: there is nothing
+to lose, and the alternative is refusing every command until someone
+reverts it by hand.  A buffer that IS modified has two versions of the
+file and no way to tell which the user wants, so it is refused untouched
+and the conflict stays where it can be resolved -- Emacs will offer the
+diff on the next visit.
+
+Left to itself `find-file-noselect' asks instead, which is why this
+exists: see `ecl--without-prompts' for what an unanswerable question
+does to the daemon."
+  (let* ((path (ecl-org--file file))
+         (buf (find-buffer-visiting path)))
+    (when (and buf (not (with-current-buffer buf
+                          (verify-visited-file-modtime))))
+      (with-current-buffer buf
+        (when (buffer-modified-p)
+          (error "%s changed on disk while the Emacs buffer has unsaved \
+changes; resolve it in Emacs first" path))
+        (revert-buffer t t)))
+    (or buf (find-file-noselect path t))))
+
 (defvar ecl-org-private-tags '("noai" "crypt" "private" "secret")
   "Tags that put a heading out of reach of `ecl org'.
 Matched case-insensitively and inherited, so the tag covers the whole
@@ -187,7 +214,7 @@ A subtree tagged with one of `ecl-org-private-tags' collapses to a single
 `STARS <hidden :TAG:>' line: neither its title nor its children are
 listed, but its place in the tree is, so the gap is not mistaken for an
 absence."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (ecl-org--check-private-file file)
      ;; The scanner caches each entry's inherited tags and `org-get-tags'
@@ -221,7 +248,7 @@ By default only the section's own content -- from after the heading line
 the region `ecl-org-replace-section' can edit.  With SUBTREE non-nil,
 the entire subtree (heading line and children included).  The result
 always ends in a newline."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
      (let ((bounds (if subtree
@@ -242,7 +269,7 @@ contain org heading lines; new sub-headings go through `ecl-org-create').
 CONTENT should include its own leading newline.  Saves the buffer."
   (when (string-match-p "^\\*+ " content)
     (error "Content contains an org heading line; use `ecl org create' for structure"))
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
      (goto-char (cdr (ecl-org--content-region)))
@@ -269,7 +296,7 @@ land here, so this is where a block inside a private subtree is refused."
   "Execute the babel src block named NAME (via #+name:) in FILE.
 Return result as string. Inserts #+RESULTS: in buffer and saves.
 Bypasses `org-confirm-babel-evaluate'."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (ecl-org--goto-block name file)
      (let* ((org-confirm-babel-evaluate nil)
@@ -283,7 +310,7 @@ Body only -- the text between the #+begin_src and #+end_src lines,
 verbatim.  With FULL non-nil, the whole block instead: from its #+name:
 line through #+end_src.  The result always ends in a newline.  Pure
 query; blocks are addressed by name, not by outline path."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (ecl-org--goto-block name file)
      (let* ((el (org-element-at-point))
@@ -306,7 +333,7 @@ this is the narrow alternative to rewriting a whole section with
 Org stores block content, so it round-trips with `ecl-org-block'.  A
 #+RESULTS: drawer left over from an earlier run is not touched.  Saves
 the buffer and returns a confirmation string."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (ecl-org--goto-block name file)
      ;; Two Org encodings to undo, both of which would otherwise rewrite
@@ -334,7 +361,7 @@ tagged with one of `ecl-org-private-tags' is refused rather than narrowed
 around: what to tangle instead is the caller's call, not ours."
   (when (and block segments)
     (error "Give only one of --block / path segments"))
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (save-restriction
        (let ((hint " (tangle one --block, or a subtree without it)"))
@@ -363,7 +390,7 @@ the heading's attachment directory."
   (let ((src (ecl-org--file source)))
     (unless (file-exists-p src)
       (error "No such file: %s" source))
-    (with-current-buffer (find-file-noselect (ecl-org--file file))
+    (with-current-buffer (ecl-org--buffer file)
       (org-with-wide-buffer
        (goto-char (ecl-org--find-olp
                    segments (format "; trailing arg taken as SOURCE: %S" source)))
@@ -376,7 +403,7 @@ the heading's attachment directory."
 Pure query: unlike attaching, it neither creates the directory nor
 assigns an ID."
   (require 'org-attach)
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
      (org-attach-dir))))
@@ -385,7 +412,7 @@ assigns an ID."
   "List the filenames attached to the heading at SEGMENTS in FILE.
 Returns nil when the heading has no attachment directory."
   (require 'org-attach)
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
      (let ((dir (org-attach-dir)))
@@ -399,7 +426,7 @@ what `ecl org run' and `ecl org tangle --block' address; anonymous blocks
 are omitted since they cannot be named on the command line, and so are
 blocks under a heading tagged with one of `ecl-org-private-tags' -- the
 name and the tangle target say enough on their own."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (ecl-org--check-private-file file)
      (let ((rows
@@ -479,7 +506,7 @@ never touched.  With REGEXP non-nil, each OLD is an Emacs regexp and its
 NEW may use \\N backrefs; otherwise literal strings.  Atomic: every OLD
 must match or nothing is written.  Returns the per-pair replacement
 counts, one per line.  Saves the buffer."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
      (let* ((bounds (ecl-org--content-region))
@@ -525,7 +552,7 @@ STATE must be one of the file's TODO keywords.  If entering STATE (or leaving
 the current state) is configured to record a note (an `@' flag in `#+TODO:')
 and NOTE is nil, signal an error and change nothing.  When NOTE is given it is
 recorded for any state that logs.  Returns the new state string."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp
                  segments (format "; trailing arg taken as STATE: %S" state)))
@@ -580,7 +607,7 @@ interactive `*Org Note*' post-command hook never fires under `emacsclient'
 if NOTE is blank.  Return a short confirmation string."
   (when (or (null note) (string-blank-p note))
     (error "Note text is empty"))
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp
                  segments (format "; trailing arg taken as NOTE: %S" note)))
@@ -608,7 +635,7 @@ if NOTE is blank.  Return a short confirmation string."
 EFFORT is an Org effort string such as \"0:30\", \"1:00\" or \"2d\"; an
 empty EFFORT removes the property.  Returns the new Effort value, or nil
 when cleared."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp
                  segments (format "; trailing arg taken as EFFORT: %S" effort)))
@@ -623,7 +650,7 @@ when cleared."
   "Return the Effort property of the heading at SEGMENTS in FILE, or nil.
 Reads the heading's own Effort; with INHERIT non-nil, fall back to the
 nearest ancestor's Effort when the heading has none.  Pure query."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
      (org-entry-get (point) org-effort-property inherit))))
@@ -633,7 +660,7 @@ nearest ancestor's Effort when the heading has none.  Pure query."
 NAME is a property name such as \"Owner\" or \"URL\" (no colons); an
 empty VALUE removes the property.  Returns the new value, or nil when
 cleared."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp
                  segments
@@ -649,7 +676,7 @@ cleared."
   "Return property NAME of the heading at SEGMENTS in FILE, or nil.
 Reads the heading's own value; with INHERIT non-nil, fall back to the
 nearest ancestor that sets NAME.  Pure query."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp
                  segments (format "; trailing arg taken as NAME: %S" name)))
@@ -661,7 +688,7 @@ One NAME: VALUE per line.
 Lists only what is set in the heading's own property drawer, excluding
 inherited and Org's computed properties (e.g. the filename-derived
 CATEGORY).  Empty string when the drawer is empty or absent.  Pure query."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
      (mapconcat (lambda (kv) (format "%s: %s" (car kv) (cdr kv)))
@@ -697,7 +724,7 @@ split on the first =; an empty value removes the property).  A non-empty
 BODY replaces the section's body -- the content after the planning line
 and any leading drawers, up to the first child heading -- while empty
 BODY leaves it untouched; clearing is only via CLEAR-BODY."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      ;; Validate inputs before touching the tree, so a bad flag cannot
      ;; leave a half-created heading behind in the buffer.
@@ -766,7 +793,7 @@ The subtree is cut, so it stays recoverable from the kill ring of the
 running Emacs session.  A subtree holding a heading tagged with one of
 `ecl-org-private-tags' is refused: it cannot be read here, so it cannot be
 destroyed here either."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
      (ecl-org--check-private-region
@@ -779,7 +806,7 @@ destroyed here either."
 (defun ecl-org-rename (file segments title)
   "Retitle the heading at SEGMENTS in FILE to TITLE, in place; save.
 Stars, TODO keyword, priority and tags are preserved.  Returns TITLE."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp
                  segments (format "; trailing arg taken as TITLE: %S" title)))
@@ -798,15 +825,14 @@ interactive post-command hook never fires under `emacsclient', same
 technique as `ecl-org-set-status').  Saves both buffers.  Returns a
 confirmation string.  A subtree holding a heading tagged with one of
 `ecl-org-private-tags' does not move."
-  (let* ((src (ecl-org--file file))
-         (dest-buf (find-file-noselect (if to-file (ecl-org--file to-file) src)))
+  (let* ((dest-buf (ecl-org--buffer (or to-file file)))
          (dest-pos
           (when to-segments
             (with-current-buffer dest-buf
               (org-with-wide-buffer
                (ecl-org--find-olp to-segments "; resolving --to destination")))))
          new-loc)
-    (with-current-buffer (find-file-noselect src)
+    (with-current-buffer (ecl-org--buffer file)
       (org-with-wide-buffer
        (goto-char (ecl-org--find-olp segments))
        (ecl-org--check-private-region
@@ -857,7 +883,7 @@ confirmation string.  A subtree holding a heading tagged with one of
 (defun ecl-org--get-keyword (file name)
   "Return the value(s) of the leading #+NAME: keyword in FILE.
 Multiple occurrences are joined with newlines; \"\" when none is present."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (point-min))
      (let ((case-fold-search t)
@@ -892,7 +918,7 @@ after the leading run of #+ keyword lines.  Caller is responsible for saving."
   "Set FILE's #+FILETAGS from TAGS-STRING (whitespace/colon separated); save.
 An empty TAGS-STRING clears the value."
   (let ((tags (split-string tags-string "[ \t:]+" t)))
-    (with-current-buffer (find-file-noselect (ecl-org--file file))
+    (with-current-buffer (ecl-org--buffer file)
       (org-with-wide-buffer
        (ecl-org--set-keyword "FILETAGS"
                             (if tags (concat ":" (string-join tags ":") ":") ""))
@@ -902,7 +928,7 @@ An empty TAGS-STRING clears the value."
 (defun ecl-org-set-todo-keywords (file spec)
   "Set FILE's #+TODO keyword spec to SPEC, re-parse options, and save.
 Replaces the first #+TODO line; consolidate manually if several exist."
-  (with-current-buffer (find-file-noselect (ecl-org--file file))
+  (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (ecl-org--set-keyword "TODO" spec)
      (org-set-regexps-and-options)
