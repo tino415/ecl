@@ -648,6 +648,44 @@ is not what the next command would edit."
     (should (equal (ecl-org-test--file-string f) "* Notes\nDisk moved on.\n"))
     (should (buffer-modified-p (find-buffer-visiting f)))))
 
+;;; ecl-org--save  (whose unsaved work is it)
+
+(ert-deftest ecl-org-test-save-reaches-disk-from-a-clean-buffer ()
+  "The ordinary case: git, rg and everything else read the file, not the buffer."
+  (ecl-org-test--with-file f
+    (ecl-org-append-section f '("Notes") "\nFrom the agent.\n")
+    (should (string-search "From the agent." (ecl-org-test--file-string f)))
+    (should-not (buffer-modified-p (find-buffer-visiting f)))))
+
+(ert-deftest ecl-org-test-save-leaves-a-buffer-the-user-was-editing ()
+  "An edit to one heading must not flush an unfinished edit in another."
+  (ecl-org-test--with-file f
+    (ecl-org-section f '("Notes"))
+    (with-current-buffer (find-buffer-visiting f)
+      (goto-char (point-max))
+      (insert "* Half-written\nstill thinking.\n"))
+    (ecl-org-append-section f '("Notes") "\nFrom the agent.\n")
+    ;; Both edits are in the buffer, neither is on disk yet.
+    (should (string-search "From the agent." (ecl-org-section f '("Notes"))))
+    (should-not (string-search "From the agent." (ecl-org-test--file-string f)))
+    (should-not (string-search "Half-written" (ecl-org-test--file-string f)))
+    (should (buffer-modified-p (find-buffer-visiting f)))
+    ;; The user saves when ready, and gets both.
+    (with-current-buffer (find-buffer-visiting f) (save-buffer))
+    (should (string-search "From the agent." (ecl-org-test--file-string f)))
+    (should (string-search "Half-written" (ecl-org-test--file-string f)))))
+
+(ert-deftest ecl-org-test-save-resumes-once-the-user-has-saved ()
+  "Holding off is per command, not a mode the buffer gets stuck in."
+  (ecl-org-test--with-file f
+    (ecl-org-section f '("Notes"))
+    (with-current-buffer (find-buffer-visiting f)
+      (goto-char (point-max))
+      (insert "* Half-written\nstill thinking.\n")
+      (save-buffer))
+    (ecl-org-append-section f '("Notes") "\nFrom the agent.\n")
+    (should (string-search "From the agent." (ecl-org-test--file-string f)))))
+
 ;;; reload
 
 (ert-deftest ecl-org-test-reload-rebuilds-the-command-table ()

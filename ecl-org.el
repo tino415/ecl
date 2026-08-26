@@ -42,6 +42,20 @@
   "Expand FILE against the ecl client's cwd when dispatched via ecl."
   (expand-file-name file (or (bound-and-true-p ecl-directory) default-directory)))
 
+(defvar-local ecl-org--was-dirty nil
+  "Whether the buffer already held unsaved changes when a command arrived.
+Set by `ecl-org--buffer', read by `ecl-org--save'.")
+
+(defun ecl-org--save ()
+  "Write the buffer out, unless the user was already editing it.
+Saving is how the file on disk keeps up with these commands -- `git',
+`rg' and everything that is not this daemon read that file, not the
+buffer.  But a buffer the user had already modified holds work of theirs
+that they have not committed to disk yet, and an agent editing one
+heading has no business flushing an unfinished edit in another.  So that
+buffer keeps the change in memory and the user saves both when ready."
+  (unless ecl-org--was-dirty (save-buffer)))
+
 (defun ecl-org--buffer (file)
   "Return the buffer visiting FILE, in step with what is on disk.
 Every command here goes through this, so it is the one place that has to
@@ -67,7 +81,9 @@ does to the daemon."
           (error "%s changed on disk while the Emacs buffer has unsaved \
 changes; resolve it in Emacs first" path))
         (revert-buffer t t)))
-    (or buf (find-file-noselect path t))))
+    (with-current-buffer (or buf (find-file-noselect path t))
+      (setq ecl-org--was-dirty (buffer-modified-p))
+      (current-buffer))))
 
 (defvar ecl-org-private-tags '("noai" "crypt" "private" "secret")
   "Tags that put a heading out of reach of `ecl org'.
@@ -266,7 +282,7 @@ always ends in a newline."
   "Append CONTENT to the end of the content of the heading at SEGMENTS in FILE.
 Inserts before the first child heading (body text only -- CONTENT may not
 contain org heading lines; new sub-headings go through `ecl-org-create').
-CONTENT should include its own leading newline.  Saves the buffer."
+CONTENT should include its own leading newline.  Saves via `ecl-org--save'."
   (when (string-match-p "^\\*+ " content)
     (error "Content contains an org heading line; use `ecl org create' for structure"))
   (with-current-buffer (ecl-org--buffer file)
@@ -274,7 +290,7 @@ CONTENT should include its own leading newline.  Saves the buffer."
      (goto-char (ecl-org--find-olp segments))
      (goto-char (cdr (ecl-org--content-region)))
      (insert (if (string-suffix-p "\n" content) content (concat content "\n"))))
-    (save-buffer))
+    (ecl-org--save))
   nil)
 
 (defun ecl-org--goto-block (name file)
@@ -301,7 +317,7 @@ Bypasses `org-confirm-babel-evaluate'."
      (ecl-org--goto-block name file)
      (let* ((org-confirm-babel-evaluate nil)
             (result (org-babel-execute-src-block)))
-       (save-buffer)
+       (ecl-org--save)
        (format "%s" (or result ""))))))
 
 (defun ecl-org-block (file name &optional full)
@@ -346,7 +362,7 @@ the buffer and returns a confirmation string."
        (org-babel-update-block-body
         (org-escape-code-in-string
          (if (string-suffix-p "\n" body) body (concat body "\n")))))
-     (save-buffer)
+     (ecl-org--save)
      (format "updated block %s" name))))
 
 (defun ecl-org-tangle (file &optional block segments)
@@ -395,7 +411,7 @@ the heading's attachment directory."
        (goto-char (ecl-org--find-olp
                    segments (format "; trailing arg taken as SOURCE: %S" source)))
        (save-excursion (org-attach-attach src))
-       (save-buffer)
+       (ecl-org--save)
        (org-attach-dir)))))
 
 (defun ecl-org-attach-dir (file segments)
@@ -505,7 +521,7 @@ drawer included) up to the first child heading; the tree structure is
 never touched.  With REGEXP non-nil, each OLD is an Emacs regexp and its
 NEW may use \\N backrefs; otherwise literal strings.  Atomic: every OLD
 must match or nothing is written.  Returns the per-pair replacement
-counts, one per line.  Saves the buffer."
+counts, one per line.  Saves via `ecl-org--save'."
   (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
@@ -529,7 +545,7 @@ counts, one per line.  Saves the buffer."
        (delete-region beg end)
        (goto-char beg)
        (insert text)
-       (save-buffer)
+       (ecl-org--save)
        (mapconcat #'number-to-string (nreverse counts) "\n")))))
 
 (defun ecl-org-cut-section (file segments texts &optional regexp)
@@ -537,7 +553,7 @@ counts, one per line.  Saves the buffer."
 The counterpart of `ecl-org-replace-section' with an empty replacement:
 same content-only scope, same atomicity (every text must match or nothing
 is written), same REGEXP option.  Returns the per-text removal counts,
-one per line.  Saves the buffer."
+one per line.  Saves via `ecl-org--save'."
   (ecl-org-replace-section file segments
                            (mapcar (lambda (text) (cons text "")) texts)
                            regexp))
@@ -594,11 +610,11 @@ recorded for any state that logs.  Returns the new state string."
                    (when note (insert note))
                    (org-store-log-note))
                (when (buffer-live-p b) (kill-buffer b))))))
-       (save-buffer)
+       (ecl-org--save)
        state))))
 
 (defun ecl-org-add-note (file segments note)
-  "Add a timestamped log NOTE to the heading at SEGMENTS in FILE; save buffer.
+  "Add a timestamped log NOTE to the heading at SEGMENTS in FILE; save.
 Files NOTE into the heading's LOGBOOK drawer exactly as the interactive
 `org-add-note' (\\[org-add-log-note], `C-c C-z') would, honoring
 `org-log-into-drawer'.  Drives `org-store-log-note' directly because the
@@ -627,7 +643,7 @@ if NOTE is blank.  Return a short confirmation string."
              (insert note)
              (org-store-log-note))
          (when (buffer-live-p b) (kill-buffer b))))
-     (save-buffer)
+     (ecl-org--save)
      "note added")))
 
 (defun ecl-org-set-effort (file segments effort)
@@ -643,7 +659,7 @@ when cleared."
        (if (string-empty-p effort)
            (org-entry-delete (point) org-effort-property)
          (org-set-effort nil effort)))
-     (save-buffer)
+     (ecl-org--save)
      (org-entry-get (point) org-effort-property))))
 
 (defun ecl-org-get-effort (file segments &optional inherit)
@@ -669,7 +685,7 @@ cleared."
        (if (string-empty-p value)
            (org-entry-delete (point) name)
          (org-entry-put (point) name value)))
-     (save-buffer)
+     (ecl-org--save)
      (org-entry-get (point) name))))
 
 (defun ecl-org-get-property (file segments name &optional inherit)
@@ -783,7 +799,7 @@ BODY leaves it untouched; clearing is only via CLEAR-BODY."
            (goto-char (min body-beg body-end))
            (unless (string-empty-p (or body ""))
              (insert (if (string-suffix-p "\n" body) body (concat body "\n"))))))
-       (save-buffer)
+       (ecl-org--save)
        (format "%s %s" (if created "created" "updated")
                (string-join segments " > "))))))
 
@@ -800,7 +816,7 @@ destroyed here either."
       (point) (save-excursion (org-end-of-subtree t t) (point))
       (ecl-org--path-label segments))
      (org-cut-subtree)
-     (save-buffer))
+     (ecl-org--save))
     nil))
 
 (defun ecl-org-rename (file segments title)
@@ -811,7 +827,7 @@ Stars, TODO keyword, priority and tags are preserved.  Returns TITLE."
      (goto-char (ecl-org--find-olp
                  segments (format "; trailing arg taken as TITLE: %S" title)))
      (org-edit-headline title)
-     (save-buffer)
+     (ecl-org--save)
      title)))
 
 (defun ecl-org-refile (file segments &optional to-file to-segments)
@@ -822,7 +838,7 @@ first or last child.  TO-SEGMENTS nil refiles to the top level; TO-FILE,
 when given, is the destination file (default FILE), so moves may cross
 files.  Honors `org-log-refile' by driving Org's log note directly (the
 interactive post-command hook never fires under `emacsclient', same
-technique as `ecl-org-set-status').  Saves both buffers.  Returns a
+technique as `ecl-org-set-status').  Saves both via `ecl-org--save'.  Returns a
 confirmation string.  A subtree holding a heading tagged with one of
 `ecl-org-private-tags' does not move."
   (let* ((dest-buf (ecl-org--buffer (or to-file file)))
@@ -872,9 +888,9 @@ confirmation string.  A subtree holding a heading tagged with one of
                       (org-store-log-note))
                   (when (buffer-live-p b) (kill-buffer b)))))))
          (when (markerp new-loc) (move-marker new-loc nil))))
-      (save-buffer)
+      (ecl-org--save)
       (unless (eq (current-buffer) dest-buf)
-        (with-current-buffer dest-buf (save-buffer))))
+        (with-current-buffer dest-buf (ecl-org--save))))
     (format "refiled %s -> %s%s"
             (string-join segments " > ")
             (if to-segments (string-join to-segments " > ") "top level")
@@ -922,7 +938,7 @@ An empty TAGS-STRING clears the value."
       (org-with-wide-buffer
        (ecl-org--set-keyword "FILETAGS"
                             (if tags (concat ":" (string-join tags ":") ":") ""))
-       (save-buffer))
+       (ecl-org--save))
       nil)))
 
 (defun ecl-org-set-todo-keywords (file spec)
@@ -932,7 +948,7 @@ Replaces the first #+TODO line; consolidate manually if several exist."
     (org-with-wide-buffer
      (ecl-org--set-keyword "TODO" spec)
      (org-set-regexps-and-options)
-     (save-buffer))
+     (ecl-org--save))
     nil))
 
 (defconst ecl-org-commands

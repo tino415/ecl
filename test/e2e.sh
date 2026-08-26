@@ -277,6 +277,32 @@ grep -q '^disk moved on$' "$S" && ! grep -q '^x$' "$S" \
 run org outline "$F" >/dev/null 2>&1
 expect_exit "an unrelated file still works" 0 $?
 
+# --- whose unsaved work is it ---
+D="$WORK/dirty.org"
+printf '* Notes\nbase\n' > "$D"
+printf '\nfrom the agent\n' | run org append "$D" Notes >/dev/null 2>&1
+grep -q 'from the agent' "$D" \
+  && ok "clean buffer: the edit reaches disk" || bad "not saved: $(cat "$D")"
+
+# The user is mid-edit; an agent touching another heading must not save for them.
+emacsclient -s testing -e "(with-current-buffer (find-buffer-visiting \"$D\")
+  (goto-char (point-max)) (insert \"* Half-written\\nstill thinking.\\n\") t)" >/dev/null 2>&1
+printf '\nsecond agent line\n' | run org append "$D" Notes >/dev/null 2>&1
+expect_exit "edit onto a dirty buffer exits 0" 0 $?
+grep -q 'second agent line' "$D" \
+  && bad "flushed the user's unfinished edit" || ok "dirty buffer: nothing written to disk"
+out=$(run org section "$D" Notes)
+echo "$out" | grep -q 'second agent line' \
+  && ok "the edit is in the buffer" || bad "edit lost: $out"
+
+emacsclient -s testing -e "(with-current-buffer (find-buffer-visiting \"$D\") (save-buffer) t)" >/dev/null 2>&1
+grep -q 'second agent line' "$D" && grep -q 'Half-written' "$D" \
+  && ok "the user's save writes both" || bad "after save: $(cat "$D")"
+
+printf '\nthird agent line\n' | run org append "$D" Notes >/dev/null 2>&1
+grep -q 'third agent line' "$D" \
+  && ok "saving resumes once the buffer is clean" || bad "still holding off"
+
 # --- eval: the client waits for a human ---
 # No user in this daemon, so we play the user over a second emacsclient:
 # wait for the review buffer to appear, then run the real commands in it.

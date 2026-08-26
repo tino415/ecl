@@ -113,8 +113,22 @@ Nothing is written and the buffer is left alone, so Emacs still offers its
 own diff on the next visit. That resolution is a human's; these commands
 only decline to pre-empt it.
 
-Note that a write of any kind saves the whole buffer, so an edit to one
-heading also flushes unsaved changes elsewhere in the file.
+## Whose unsaved work it is
+
+An edit is written out, because `git`, `rg` and everything else that is
+not this daemon reads the file rather than the buffer. The exception is a
+buffer you were already editing: saving that would flush an unfinished
+edit of yours somewhere else in the file, on the timing of an agent that
+knows nothing about it.
+
+So a command onto a modified buffer leaves the change in memory and says
+nothing. Your next `C-x C-s` writes both. The next command after that
+saves again — it is a per-command decision, not a mode the buffer gets
+stuck in.
+
+The cost is that while you sit on unsaved changes, `git status` in
+`~/org` will not show what an agent just wrote. It is in the buffer, and
+`ecl org section` reads it back.
 
 ## Approving elisp
 
