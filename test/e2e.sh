@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # End-to-end battery: the real bin/ecl client against a throwaway
-# `emacs -Q --daemon=testing`.  Never touches the default daemon.
+# `emacs -Q --daemon' of its own.  Never touches the default daemon.
+#
+# The socket is a path inside the checkout rather than a name, for the
+# same reason test/debug-daemon.sh uses one: a *name* is bound under
+# $XDG_RUNTIME_DIR, which a sandbox may mount read-only, and then the
+# daemon cannot start at all.  A path also makes it impossible for this
+# to reach the user's real daemon, whatever ECL_SERVER says outside.
 set -u
 cd "$(dirname "$0")/.."
 
-export ECL_SERVER=testing
+SOCK="$PWD/.e2e/socket"
+export ECL_SERVER="$SOCK"
 ECL=./bin/ecl
 PASS=0
 FAIL=0
@@ -34,19 +41,23 @@ reap() {
 
 kill_daemon() {
   local pid
-  pid=$(timeout 5 emacsclient -s testing -e '(emacs-pid)' 2>/dev/null)
-  timeout 5 emacsclient -s testing -e '(kill-emacs)' >/dev/null 2>&1
+  pid=$(timeout 5 emacsclient -s "$SOCK" -e '(emacs-pid)' 2>/dev/null)
+  timeout 5 emacsclient -s "$SOCK" -e '(kill-emacs)' >/dev/null 2>&1
   reap "$pid"
 }
 
 cleanup() {
   kill_daemon
-  rm -rf "$WORK"
+  rm -rf "$WORK" "$(dirname "$SOCK")"
 }
 
 kill_daemon
-emacs -Q --daemon=testing -l test/e2e-init.el 2>/dev/null || {
+# `server-ensure-safe-dir' refuses a socket directory anyone else can
+# read, and the checkout itself is 0755.
+mkdir -p "$(dirname "$SOCK")" && chmod 700 "$(dirname "$SOCK")"
+emacs -Q --daemon="$SOCK" -l test/e2e-init.el 2>/dev/null || {
   echo "FAIL: could not start testing daemon"; exit 1; }
+[ -S "$SOCK" ] || { echo "FAIL: no socket at $SOCK"; exit 1; }
 WORK=$(mktemp -d)
 trap cleanup EXIT
 
@@ -261,7 +272,7 @@ grep -q '^after$' "$S" && grep -q '^appended$' "$S" \
 # Both sides changed: refuse, and leave the conflict for Emacs.
 printf '* Notes\nbase\n' > "$S"
 run org section "$S" Notes >/dev/null 2>&1
-emacsclient -s testing -e "(with-current-buffer (find-buffer-visiting \"$S\")
+emacsclient -s "$SOCK" -e "(with-current-buffer (find-buffer-visiting \"$S\")
   (goto-char (point-max)) (insert \"unsaved\\n\") (buffer-modified-p))" >/dev/null 2>&1
 printf '* Notes\ndisk moved on\n' > "$S"
 out=$(printf '\nx\n' | run org append "$S" Notes 2>&1)
@@ -272,7 +283,7 @@ grep -q '^disk moved on$' "$S" && ! grep -q '^x$' "$S" \
   && ok "conflicting write leaves the file alone" || bad "file changed: $(cat "$S")"
 
 # Nothing above may have cost us the daemon.
-[ -n "$(timeout 5 emacsclient -s testing -e '(emacs-pid)' 2>/dev/null)" ] \
+[ -n "$(timeout 5 emacsclient -s "$SOCK" -e '(emacs-pid)' 2>/dev/null)" ] \
   && ok "daemon still answers after a stale file" || bad "daemon stopped answering"
 run org outline "$F" >/dev/null 2>&1
 expect_exit "an unrelated file still works" 0 $?
@@ -285,7 +296,7 @@ grep -q 'from the agent' "$D" \
   && ok "clean buffer: the edit reaches disk" || bad "not saved: $(cat "$D")"
 
 # The user is mid-edit; an agent touching another heading must not save for them.
-emacsclient -s testing -e "(with-current-buffer (find-buffer-visiting \"$D\")
+emacsclient -s "$SOCK" -e "(with-current-buffer (find-buffer-visiting \"$D\")
   (goto-char (point-max)) (insert \"* Half-written\\nstill thinking.\\n\") t)" >/dev/null 2>&1
 printf '\nsecond agent line\n' | run org append "$D" Notes >/dev/null 2>&1
 expect_exit "edit onto a dirty buffer exits 0" 0 $?
@@ -295,7 +306,7 @@ out=$(run org section "$D" Notes)
 echo "$out" | grep -q 'second agent line' \
   && ok "the edit is in the buffer" || bad "edit lost: $out"
 
-emacsclient -s testing -e "(with-current-buffer (find-buffer-visiting \"$D\") (save-buffer) t)" >/dev/null 2>&1
+emacsclient -s "$SOCK" -e "(with-current-buffer (find-buffer-visiting \"$D\") (save-buffer) t)" >/dev/null 2>&1
 grep -q 'second agent line' "$D" && grep -q 'Half-written' "$D" \
   && ok "the user's save writes both" || bad "after save: $(cat "$D")"
 
@@ -309,8 +320,8 @@ grep -q 'third agent line' "$D" \
 decide() {
   local i=0
   while [ $i -lt 100 ]; do
-    if [ "$(emacsclient -s testing -e '(and (ecl-eval--buffers) t)' 2>/dev/null)" = "t" ]; then
-      emacsclient -s testing -e \
+    if [ "$(emacsclient -s "$SOCK" -e '(and (ecl-eval--buffers) t)' 2>/dev/null)" = "t" ]; then
+      emacsclient -s "$SOCK" -e \
         "(with-current-buffer (car (ecl-eval--buffers)) $1)" >/dev/null 2>&1
       return 0
     fi
@@ -360,7 +371,7 @@ decide '(ignore)'
 kill "$pid" 2>/dev/null
 wait $pid 2>/dev/null
 sleep 0.5
-[ "$(emacsclient -s testing -e '(and (ecl-eval--buffers) t)' 2>/dev/null)" = "nil" ] \
+[ "$(emacsclient -s "$SOCK" -e '(and (ecl-eval--buffers) t)' 2>/dev/null)" = "nil" ] \
   && ok "killed client cancels the review buffer" || bad "review buffer leaked"
 
 out=$(run eval --help)
@@ -373,14 +384,14 @@ echo "$out" | grep -q "usage: ecl eval \[CODE...\]" \
 # y-or-n-p answers e2e-allow, and browse-url only records its argument,
 # which is what the assertions read back.
 stub_browser() {
-  emacsclient -s testing -e '(progn
+  emacsclient -s "$SOCK" -e '(progn
     (defvar e2e-allow t)
     (defvar e2e-browsed nil)
     (defalias (quote browse-url) (lambda (url &rest _) (setq e2e-browsed url)))
     (defalias (quote y-or-n-p) (lambda (_prompt) e2e-allow))
     t)' >/dev/null 2>&1
 }
-browsed() { emacsclient -s testing -e 'e2e-browsed' 2>/dev/null; }
+browsed() { emacsclient -s "$SOCK" -e 'e2e-browsed' 2>/dev/null; }
 
 stub_browser
 out=$(run browse-url https://example.org/page)
@@ -390,13 +401,13 @@ expect_exit "browse-url confirmed exits 0" 0 $?
 echo "$out" | grep -q "browsing https://example.org/page" \
   && ok "browse-url reports the target" || bad "browse-url output: $out"
 
-emacsclient -s testing -e '(setq e2e-allow nil e2e-browsed nil)' >/dev/null 2>&1
+emacsclient -s "$SOCK" -e '(setq e2e-allow nil e2e-browsed nil)' >/dev/null 2>&1
 run browse-url https://example.org/denied >/dev/null 2>&1
 expect_exit "browse-url denied exits 3" 3 $?
 [ "$(browsed)" = "nil" ] \
   && ok "denial opens nothing" || bad "denied but opened: $(browsed)"
 
-emacsclient -s testing -e '(setq e2e-allow t)' >/dev/null 2>&1
+emacsclient -s "$SOCK" -e '(setq e2e-allow t)' >/dev/null 2>&1
 run browse-url "$WORK/report.html" >/dev/null 2>&1
 expect_exit "target without a scheme exits 2" 2 $?
 

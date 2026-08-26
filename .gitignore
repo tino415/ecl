@@ -1,3 +1,4 @@
 *-results.txt
 *.elc
 .debug/
+.e2e/
