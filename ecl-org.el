@@ -19,6 +19,12 @@
 ;; retitled -- and so one block can be rewritten without touching the
 ;; prose around it.
 ;;
+;; The four commands that replace a whole region blind -- create with a
+;; body, set-block, delete, refile -- take an etag of that region via
+;; --if-match, from a read made with --with-etag.  Nothing else needs
+;; one: replace and cut already require every OLD to still be there,
+;; append and note merge, and the metadata setters touch one scalar.
+;;
 ;; A heading tagged with one of `ecl-org-private-tags' is out of reach of
 ;; every command here, reads and edits alike, and shows in the outline as
 ;; <hidden :TAG:>.  That gates this tool path only -- it is not a
@@ -224,6 +230,75 @@ structure has its own commands."
         (setq end (point)))
       (cons beg end))))
 
+(defun ecl-org--subtree-region ()
+  "Bounds of the whole subtree at point, as (BEG . END).
+Heading line and children included -- what `delete' and `refile' move,
+and what `section --subtree' hands out."
+  (save-excursion
+    (org-back-to-heading t)
+    (cons (line-beginning-position)
+          (save-excursion (org-end-of-subtree t t) (point)))))
+
+(defun ecl-org--region-text (bounds)
+  "Text of BOUNDS, a (BEG . END) pair, newline-terminated.
+Reads and etag checks share this, so what was handed out and what is
+hashed back cannot drift apart over a missing final newline."
+  (let ((text (buffer-substring-no-properties (car bounds) (cdr bounds))))
+    (if (string-suffix-p "\n" text) text (concat text "\n"))))
+
+;;; Etags
+;;
+;; Every dispatch is serialised -- the daemon is single-threaded -- so
+;; two commands never interleave.  What they do is lose each other's
+;; work: read a section, spend a minute composing, write it back over an
+;; edit that arrived meanwhile.  `replace' and `cut' are already immune,
+;; since every OLD has to still be there; `append' and `note' merge.  The
+;; ones that cannot tell are those that overwrite a whole region blind,
+;; and they take an etag of that region instead.
+
+(defvar ecl-org-require-if-match '("create" "set-block" "delete" "refile")
+  "Commands that refuse to overwrite a region without --if-match.
+These are the ones that replace a whole region rather than a matched
+piece of it, so nothing else in them would notice work that arrived
+after the caller read it.  Set to nil to lift the requirement -- a
+scripted bulk edit that cannot thread etags through, say; a passed
+--if-match is still honoured.")
+
+(defun ecl-org--etag (kind text)
+  "The KIND etag of TEXT.
+KIND names the scope the caller read -- \"content\", \"subtree\" or
+\"block\" -- and is carried in the etag so a mis-scoped one can say so
+instead of just reporting a mismatch."
+  (format "%s:%s" kind (substring (secure-hash 'sha1 text) 0 12)))
+
+(defun ecl-org--check-etag (etag kind current command hint blind)
+  "Refuse the write unless ETAG still describes CURRENT.
+KIND is the scope ETAG has to cover, COMMAND names the caller in the
+message and HINT is the read that hands back a fresh one.  BLIND says
+this call would overwrite CURRENT wholesale, which is what makes an etag
+necessary; `create' is only blind when it rewrites a body that is
+already there.  A missing etag is refused only for a blind call to a
+command listed in `ecl-org-require-if-match'."
+  (cond
+   ((null etag)
+    (when (and blind (member command ecl-org-require-if-match))
+      (error "%s needs --if-match; read it first:\n  %s" command hint)))
+   ((not (string-prefix-p (concat kind ":") etag))
+    (error "%s checks the %s; re-read with:\n  %s" command kind hint))
+   ((not (equal etag (ecl-org--etag kind current)))
+    (error "Changed in Emacs since %s; re-read with:\n  %s" etag hint))))
+
+(defun ecl-org--section-hint (file segments kind)
+  "The `section' call that hands back a fresh KIND etag for SEGMENTS."
+  (format "ecl org section%s --with-etag %s %s"
+          (if (equal kind "subtree") " --subtree" "")
+          (shell-quote-argument file)
+          (mapconcat #'shell-quote-argument segments " ")))
+
+(defun ecl-org--with-etag (kind text)
+  "TEXT with its KIND etag on a header line above it."
+  (format "#+ETAG: %s\n%s" (ecl-org--etag kind text) text))
+
 (defun ecl-org-outline (file)
   "Return outline of FILE: one heading per line as `STARS [TODO ]TITLE'.
 A subtree tagged with one of `ecl-org-private-tags' collapses to a single
@@ -257,26 +332,30 @@ absence."
                     (save-excursion (org-end-of-subtree t t) (point)))))))
        (mapconcat #'identity (nreverse lines) "\n")))))
 
-(defun ecl-org-section (file segments &optional subtree)
+(defun ecl-org-section (file segments &optional subtree with-etag)
   "Return the content of the heading at SEGMENTS in FILE.
 By default only the section's own content -- from after the heading line
 \(property drawer included) to the first child heading -- i.e. exactly
 the region `ecl-org-replace-section' can edit.  With SUBTREE non-nil,
 the entire subtree (heading line and children included).  The result
-always ends in a newline."
+always ends in a newline.
+
+WITH-ETAG puts a `#+ETAG:' line above it, to hand back to --if-match.
+It comes with the content rather than from a call of its own so there is
+no gap between reading and versioning for an edit to slip through."
   (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
      (let ((bounds (if subtree
-                       (cons (line-beginning-position)
-                             (save-excursion (org-end-of-subtree t t) (point)))
+                       (ecl-org--subtree-region)
                      (ecl-org--content-region))))
        ;; A private child would ride out inside its public parent's subtree.
        (when subtree
          (ecl-org--check-private-region (car bounds) (cdr bounds)
                                         (ecl-org--path-label segments)))
-       (let ((text (buffer-substring-no-properties (car bounds) (cdr bounds))))
-         (if (string-suffix-p "\n" text) text (concat text "\n")))))))
+       (let ((text (ecl-org--region-text bounds))
+             (kind (if subtree "subtree" "content")))
+         (if with-etag (ecl-org--with-etag kind text) text))))))
 
 (defun ecl-org-append-section (file segments content)
   "Append CONTENT to the end of the content of the heading at SEGMENTS in FILE.
@@ -320,12 +399,22 @@ Bypasses `org-confirm-babel-evaluate'."
        (ecl-org--save)
        (format "%s" (or result ""))))))
 
-(defun ecl-org-block (file name &optional full)
+(defun ecl-org--block-body (el)
+  "The body of src block EL, newline-terminated, as `ecl-org-block' hands it out."
+  (let ((text (org-element-property :value el)))
+    (if (string-suffix-p "\n" text) text (concat text "\n"))))
+
+(defun ecl-org-block (file name &optional full with-etag)
   "Return the body of the babel src block named NAME in FILE.
 Body only -- the text between the #+begin_src and #+end_src lines,
 verbatim.  With FULL non-nil, the whole block instead: from its #+name:
 line through #+end_src.  The result always ends in a newline.  Pure
-query; blocks are addressed by name, not by outline path."
+query; blocks are addressed by name, not by outline path.
+
+WITH-ETAG puts a `#+ETAG:' line above it, for `ecl-org-set-block' to
+check.  It covers the body either way, FULL included: the body is what
+set-block overwrites, and the header lines it leaves alone have no
+business invalidating the write."
   (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (ecl-org--goto-block name file)
@@ -338,9 +427,14 @@ query; blocks are addressed by name, not by outline path."
                          (skip-chars-backward " \t\n")
                          (line-end-position)))
                     (org-element-property :value el))))
-       (if (string-suffix-p "\n" text) text (concat text "\n"))))))
+       (unless (string-suffix-p "\n" text) (setq text (concat text "\n")))
+       (if with-etag
+           (concat (format "#+ETAG: %s\n"
+                           (ecl-org--etag "block" (ecl-org--block-body el)))
+                   text)
+         text)))))
 
-(defun ecl-org-set-block (file name body)
+(defun ecl-org-set-block (file name body &optional if-match)
   "Replace the body of the babel src block named NAME in FILE with BODY.
 Only the body between #+begin_src and #+end_src changes: the #+name:
 line, the header arguments and every neighbouring line are left alone --
@@ -348,10 +442,21 @@ this is the narrow alternative to rewriting a whole section with
 `ecl-org-create'.  BODY keeps its own indentation and is escaped the way
 Org stores block content, so it round-trips with `ecl-org-block'.  A
 #+RESULTS: drawer left over from an earlier run is not touched.  Saves
-the buffer and returns a confirmation string."
+the buffer and returns a confirmation string.
+
+IF-MATCH is the block etag from `ecl-org-block', required by default --
+the whole body goes, so nothing here would notice an edit that landed
+after the caller read it."
   (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (ecl-org--goto-block name file)
+     (ecl-org--check-etag if-match "block"
+                          (ecl-org--block-body (org-element-at-point))
+                          "set-block"
+                          (format "ecl org block --with-etag %s %s"
+                                  (shell-quote-argument file)
+                                  (shell-quote-argument name))
+                          t)
      ;; Two Org encodings to undo, both of which would otherwise rewrite
      ;; lines the caller never touched: without `org-src-preserve-indentation'
      ;; the body is re-indented by `org-edit-src-content-indentation', and
@@ -729,7 +834,8 @@ at the end of the buffer.  Returns the position of the new heading."
       (insert (make-string level ?*) " " title "\n")
       beg)))
 
-(defun ecl-org-create (file segments todo effort tags properties parents clear-body body)
+(defun ecl-org-create (file segments todo effort tags properties parents clear-body body
+                            &optional if-match)
   "Upsert the heading at SEGMENTS in FILE; save.  Returns what happened.
 Creates the leaf as the last child of its parent when missing; a missing
 intermediate segment errors unless PARENTS is non-nil (then all missing
@@ -739,7 +845,13 @@ TAGS (added to existing tags), and PROPERTIES (a list of K=V strings,
 split on the first =; an empty value removes the property).  A non-empty
 BODY replaces the section's body -- the content after the planning line
 and any leading drawers, up to the first child heading -- while empty
-BODY leaves it untouched; clearing is only via CLEAR-BODY."
+BODY leaves it untouched; clearing is only via CLEAR-BODY.
+
+IF-MATCH is the content etag from `section --with-etag'.  It is required
+only when this call is a blind overwrite -- a body rewrite of a heading
+that is already there.  Setting metadata overwrites nothing, and a
+heading being created has nothing to match yet; passing an etag for one
+that does not exist is an error rather than a silent no-op."
   (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      ;; Validate inputs before touching the tree, so a bad flag cannot
@@ -752,6 +864,23 @@ BODY leaves it untouched; clearing is only via CLEAR-BODY."
        (unless (string-search "=" kv)
          (error "--property needs K=V, got %S" kv)))
      (ecl-org--check-private-file file)
+     ;; The etag is settled here rather than at the body rewrite below,
+     ;; because the walk that follows creates missing headings as it
+     ;; goes -- by the time the leaf is in hand the tree has already
+     ;; moved, and a refusal then would leave a heading behind.
+     (let ((existing (condition-case nil (org-find-olp segments t) (error nil))))
+       (cond
+        (existing
+         (save-excursion
+           (goto-char existing)
+           (ecl-org--check-private (ecl-org--path-label segments))
+           (ecl-org--check-etag
+            if-match "content" (ecl-org--region-text (ecl-org--content-region))
+            "create" (ecl-org--section-hint file segments "content")
+            (or clear-body (not (string-empty-p (or body "")))))))
+        (if-match
+         (error "No heading %s to match; --if-match wants one that exists"
+                (ecl-org--path-label segments)))))
      (let ((n (length segments)) (i 0) (prefix nil) (created nil) pos)
        (while (< i n)
          (let* ((seg (nth i segments))
@@ -803,18 +932,26 @@ BODY leaves it untouched; clearing is only via CLEAR-BODY."
        (format "%s %s" (if created "created" "updated")
                (string-join segments " > "))))))
 
-(defun ecl-org-delete (file segments)
+(defun ecl-org-delete (file segments &optional if-match)
   "Remove the entire subtree at SEGMENTS in FILE; save.
 The subtree is cut, so it stays recoverable from the kill ring of the
 running Emacs session.  A subtree holding a heading tagged with one of
 `ecl-org-private-tags' is refused: it cannot be read here, so it cannot be
-destroyed here either."
+destroyed here either.
+
+IF-MATCH is the subtree etag from `section --subtree --with-etag',
+required by default: the subtree may have grown children since the
+caller looked at it, and they would go too."
   (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp segments))
-     (ecl-org--check-private-region
-      (point) (save-excursion (org-end-of-subtree t t) (point))
-      (ecl-org--path-label segments))
+     (let ((bounds (ecl-org--subtree-region)))
+       (ecl-org--check-private-region (car bounds) (cdr bounds)
+                                      (ecl-org--path-label segments))
+       (ecl-org--check-etag if-match "subtree" (ecl-org--region-text bounds)
+                            "delete"
+                            (ecl-org--section-hint file segments "subtree")
+                            t))
      (org-cut-subtree)
      (ecl-org--save))
     nil))
@@ -830,7 +967,7 @@ Stars, TODO keyword, priority and tags are preserved.  Returns TITLE."
      (ecl-org--save)
      title)))
 
-(defun ecl-org-refile (file segments &optional to-file to-segments)
+(defun ecl-org-refile (file segments &optional to-file to-segments if-match)
   "Move the subtree at SEGMENTS in FILE under TO-SEGMENTS; save.
 Delegates to `org-refile', so the subtree's level is adapted to the
 destination and `org-reverse-note-order' decides whether it lands as the
@@ -840,7 +977,11 @@ files.  Honors `org-log-refile' by driving Org's log note directly (the
 interactive post-command hook never fires under `emacsclient', same
 technique as `ecl-org-set-status').  Saves both via `ecl-org--save'.  Returns a
 confirmation string.  A subtree holding a heading tagged with one of
-`ecl-org-private-tags' does not move."
+`ecl-org-private-tags' does not move.
+
+IF-MATCH is the subtree etag from `section --subtree --with-etag',
+required by default, and covers the source only: the destination gains a
+child rather than losing one, so a change there costs nothing."
   (let* ((dest-buf (ecl-org--buffer (or to-file file)))
          (dest-pos
           (when to-segments
@@ -851,9 +992,13 @@ confirmation string.  A subtree holding a heading tagged with one of
     (with-current-buffer (ecl-org--buffer file)
       (org-with-wide-buffer
        (goto-char (ecl-org--find-olp segments))
-       (ecl-org--check-private-region
-        (point) (save-excursion (org-end-of-subtree t t) (point))
-        (ecl-org--path-label segments))
+       (let ((bounds (ecl-org--subtree-region)))
+         (ecl-org--check-private-region (car bounds) (cdr bounds)
+                                        (ecl-org--path-label segments))
+         (ecl-org--check-etag if-match "subtree" (ecl-org--region-text bounds)
+                              "refile"
+                              (ecl-org--section-hint file segments "subtree")
+                              t))
        (let ((log org-log-refile)
              ;; Refile with Org's own logging off: `org-add-log-setup'
              ;; defers the entry via `post-command-hook', which never
@@ -954,16 +1099,22 @@ Replaces the first #+TODO line; consolidate manually if several exist."
 (defconst ecl-org-commands
   `(("outline" . ecl-org-outline)
     ("section"
-     :usage "[--subtree] FILE SEG..."
+     :usage "[--subtree] [--with-etag] FILE SEG..."
      :fn ,(lambda (&rest args)
             "Print the content of the heading at SEG... in FILE.
 Content only: after the heading line (property drawer included) up to
 the first child heading -- exactly what replace can edit.  --subtree
-prints the entire subtree (heading line and children) instead."
+prints the entire subtree (heading line and children) instead.
+--with-etag adds a leading #+ETAG: line to hand to --if-match; the
+etag covers whichever of the two you asked for."
             (pcase-let ((`(,opts ,file ,segs)
-                         (ecl-org--args args '(("--subtree" . boolean)) 0
-                                        "ecl org section [--subtree] FILE SEG...")))
-              (ecl-org-section file segs (cdr (assoc "--subtree" opts))))))
+                         (ecl-org--args args '(("--subtree" . boolean)
+                                               ("--with-etag" . boolean))
+                                        0
+                                        "ecl org section [--subtree] [--with-etag] FILE SEG...")))
+              (ecl-org-section file segs
+                               (cdr (assoc "--subtree" opts))
+                               (cdr (assoc "--with-etag" opts))))))
     ("append" :stdin t
      :usage "FILE SEG..."
      :fn ,(lambda (&rest args)
@@ -1018,7 +1169,7 @@ nothing is written.  Prints one removal count per chunk."
                                     (or (cdr (assoc "--sep" opts)) "@@CUT@@"))
                (cdr (assoc "--regexp" opts))))))
     ("create" :stdin optional
-     :usage "[--parents] [--todo STATE] [--effort E] [--tag T]... [--property K=V]... [--clear-body] FILE SEG..."
+     :usage "[--parents] [--todo STATE] [--effort E] [--tag T]... [--property K=V]... [--clear-body] [--if-match ETAG] FILE SEG..."
      :fn ,(lambda (&rest args)
             "Create or update the heading at SEG... in FILE (upsert).
 A missing leaf is created as the last child of its parent; missing
@@ -1026,16 +1177,22 @@ intermediates error unless --parents.  On an existing heading only
 the passed metadata is touched: --todo (no state-change logging),
 --effort, --tag (repeatable, added), --property K=V (repeatable,
 empty V removes).  Non-empty stdin replaces the body; empty stdin
-leaves it untouched (clearing only via --clear-body)."
+leaves it untouched (clearing only via --clear-body).
+
+--if-match ETAG is required when rewriting the body of a heading
+that already exists -- that overwrites whatever arrived since you
+read it.  Get one from `ecl org section --with-etag'.  Setting
+metadata and creating a new heading need no etag."
             (pcase-let ((`(,opts ,file ,segs)
                          (ecl-org--args args '(("--parents" . boolean)
                                                ("--todo" . value)
                                                ("--effort" . value)
                                                ("--tag" . repeat)
                                                ("--property" . repeat)
-                                               ("--clear-body" . boolean))
+                                               ("--clear-body" . boolean)
+                                               ("--if-match" . value))
                                         0
-                                        "ecl org create [--parents] [--todo STATE] [--effort E] [--tag T]... [--property K=V]... [--clear-body] FILE SEG...")))
+                                        "ecl org create [--parents] [--todo STATE] [--effort E] [--tag T]... [--property K=V]... [--clear-body] [--if-match ETAG] FILE SEG...")))
               (ecl-org-create file segs
                               (cdr (assoc "--todo" opts))
                               (cdr (assoc "--effort" opts))
@@ -1043,16 +1200,20 @@ leaves it untouched (clearing only via --clear-body)."
                               (cdr (assoc "--property" opts))
                               (cdr (assoc "--parents" opts))
                               (cdr (assoc "--clear-body" opts))
-                              ecl-stdin))))
+                              ecl-stdin
+                              (cdr (assoc "--if-match" opts))))))
     ("delete"
-     :usage "FILE SEG..."
+     :usage "[--if-match ETAG] FILE SEG..."
      :fn ,(lambda (&rest args)
             "Remove the entire subtree at SEG... in FILE.
-The subtree is cut, so it stays recoverable from the Emacs kill ring."
-            (pcase-let ((`(,_ ,file ,segs)
-                         (ecl-org--args args nil 0
-                                        "ecl org delete FILE SEG...")))
-              (ecl-org-delete file segs))))
+The subtree is cut, so it stays recoverable from the Emacs kill ring.
+--if-match ETAG is required: the subtree may have grown children
+since you read it, and they go too.  Get one from
+`ecl org section --subtree --with-etag'."
+            (pcase-let ((`(,opts ,file ,segs)
+                         (ecl-org--args args '(("--if-match" . value)) 0
+                                        "ecl org delete [--if-match ETAG] FILE SEG...")))
+              (ecl-org-delete file segs (cdr (assoc "--if-match" opts))))))
     ("rename"
      :usage "FILE SEG... TITLE"
      :fn ,(lambda (&rest args)
@@ -1063,46 +1224,66 @@ Stars, TODO keyword, priority and tags are preserved."
                                         "ecl org rename FILE SEG... TITLE")))
               (ecl-org-rename file segs title))))
     ("refile"
-     :usage "[--to SEG]... [--to-file DEST] FILE SEG..."
+     :usage "[--to SEG]... [--to-file DEST] [--if-match ETAG] FILE SEG..."
      :fn ,(lambda (&rest args)
             "Move the subtree at SEG... in FILE under the --to path (like C-c C-w).
 The subtree's level adapts to the destination; --to repeats one
 destination segment per outline level, and no --to refiles to the
 top level.  --to-file DEST moves it into another file (default
-FILE).  Honors org-log-refile."
+FILE).  Honors org-log-refile.  --if-match ETAG is required, and
+covers the source subtree -- get one from
+`ecl org section --subtree --with-etag'."
             (pcase-let ((`(,opts ,file ,segs)
                          (ecl-org--args args '(("--to" . repeat)
-                                               ("--to-file" . value))
+                                               ("--to-file" . value)
+                                               ("--if-match" . value))
                                         0
-                                        "ecl org refile [--to SEG]... [--to-file DEST] FILE SEG...")))
+                                        "ecl org refile [--to SEG]... [--to-file DEST] [--if-match ETAG] FILE SEG...")))
               (ecl-org-refile file segs
                               (cdr (assoc "--to-file" opts))
-                              (cdr (assoc "--to" opts))))))
+                              (cdr (assoc "--to" opts))
+                              (cdr (assoc "--if-match" opts))))))
     ("blocks" . ecl-org-blocks)
     ("block"
-     :usage "[--full] FILE NAME"
+     :usage "[--full] [--with-etag] FILE NAME"
      :fn ,(lambda (&rest args)
             "Print the body of the src block named NAME in FILE.
 Body only -- the text between #+begin_src and #+end_src.  --full
 prints the whole block instead, from its #+name: line through
-#+end_src (header args included).  Blocks are addressed by name, not
-by outline path; `ecl org blocks' lists the names."
+#+end_src (header args included).  --with-etag adds a leading
+#+ETAG: line for set-block's --if-match; it covers the body either
+way.  Blocks are addressed by name, not by outline path;
+`ecl org blocks' lists the names."
             (pcase-let ((`(,opts ,file ,segs ,name)
-                         (ecl-org--args args '(("--full" . boolean)) 1
-                                        "ecl org block [--full] FILE NAME"
+                         (ecl-org--args args '(("--full" . boolean)
+                                               ("--with-etag" . boolean))
+                                        1
+                                        "ecl org block [--full] [--with-etag] FILE NAME"
                                         0)))
               (when segs
-                (error "usage: ecl org block [--full] FILE NAME\n\
+                (error "usage: ecl org block [--full] [--with-etag] FILE NAME\n\
 extra args between FILE and NAME: %s" (string-join segs " ")))
-              (ecl-org-block file name (cdr (assoc "--full" opts))))))
+              (ecl-org-block file name
+                             (cdr (assoc "--full" opts))
+                             (cdr (assoc "--with-etag" opts))))))
     ("set-block" :stdin t
-     :fn ,(lambda (file name)
+     :usage "[--if-match ETAG] FILE NAME"
+     :fn ,(lambda (&rest args)
             "Replace the body of the src block named NAME in FILE with stdin.
 The #+name: line, the header arguments and every neighbouring line
 are left alone -- unlike `ecl org create', which rewrites a whole
 section body.  Stdin is written verbatim; any stale #+RESULTS: is
-left as it is."
-            (ecl-org-set-block file name ecl-stdin)))
+left as it is.  --if-match ETAG is required: the whole body goes.
+Get one from `ecl org block --with-etag'."
+            (pcase-let ((`(,opts ,file ,segs ,name)
+                         (ecl-org--args args '(("--if-match" . value)) 1
+                                        "ecl org set-block [--if-match ETAG] FILE NAME"
+                                        0)))
+              (when segs
+                (error "usage: ecl org set-block [--if-match ETAG] FILE NAME\n\
+extra args between FILE and NAME: %s" (string-join segs " ")))
+              (ecl-org-set-block file name ecl-stdin
+                                 (cdr (assoc "--if-match" opts))))))
     ("run" . ecl-org-run)
     ("tangle"
      :usage "[--block NAME] FILE [SEG...]"

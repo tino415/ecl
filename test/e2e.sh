@@ -63,6 +63,12 @@ trap cleanup EXIT
 
 run() { timeout 20 "$ECL" "$@"; }
 
+# The read half of the read-then-write loop, as an agent would drive it:
+# take the etag off the header line and hand it back to --if-match.
+etag()       { run org section --with-etag "$@"           | sed -n '1s/^#+ETAG: //p'; }
+etag_sub()   { run org section --subtree --with-etag "$@" | sed -n '1s/^#+ETAG: //p'; }
+etag_block() { run org block --with-etag "$@"             | sed -n '1s/^#+ETAG: //p'; }
+
 F="$WORK/doc.org"
 cat > "$F" <<'EOF'
 #+TODO: TODO(t!) WAITING(w@) | DONE(d!)
@@ -182,7 +188,7 @@ echo "$out" | grep -q '^#+name: greet' \
 echo "$out" | grep -q ':results output' \
   && ok "block --full includes header args" || bad "block --full header args"
 
-run org set-block "$F" greet >/dev/null <<'EOF'
+run org set-block --if-match "$(etag_block "$F" greet)" "$F" greet >/dev/null <<'EOF'
 echo replaced
 echo again
 EOF
@@ -210,18 +216,66 @@ expect_exit "@ state without note exits 2" 2 $?
 # --- structure verbs ---
 run org rename "$F" Projects "Rate limiting" "Rate limits" >/dev/null
 expect_exit "rename" 0 $?
-run org delete "$F" Projects "Rate limits" >/dev/null
+run org delete --if-match "$(etag_sub "$F" Projects "Rate limits")" \
+  "$F" Projects "Rate limits" >/dev/null
 expect_exit "delete" 0 $?
 run org section "$F" Projects "Rate limits" >/dev/null 2>&1
 expect_exit "deleted heading gone (exit 2)" 2 $?
 
-run org refile --to Notes "$F" Projects "API /v2/payouts endpoint" >/dev/null
+run org refile --to Notes \
+  --if-match "$(etag_sub "$F" Projects "API /v2/payouts endpoint")" \
+  "$F" Projects "API /v2/payouts endpoint" >/dev/null
 expect_exit "refile under Notes" 0 $?
 out=$(run org section --subtree "$F" Notes)
 echo "$out" | grep -q '^\*\* API /v2/payouts endpoint' \
   && ok "refile moved heading" || bad "refile moved heading: $out"
-run org refile --to Nowhere "$F" Notes "API /v2/payouts endpoint" >/dev/null 2>&1
+run org refile --to Nowhere \
+  --if-match "$(etag_sub "$F" Notes "API /v2/payouts endpoint")" \
+  "$F" Notes "API /v2/payouts endpoint" >/dev/null 2>&1
 expect_exit "refile bad dest exits 2" 2 $?
+
+# --- etags: the read-then-write loop ---
+E="$WORK/etag.org"
+printf '* Notes\nbase line\n' > "$E"
+
+out=$(run org section --with-etag "$E" Notes)
+expect_exit "section --with-etag exits 0" 0 $?
+echo "$out" | head -1 | grep -qE '^#\+ETAG: content:[0-9a-f]{12}$' \
+  && ok "etag header is the first line" || bad "etag header: $(echo "$out" | head -1)"
+[ "$(run org section "$E" Notes)" = "base line" ] \
+  && ok "the bare read is unchanged" || bad "bare read grew a header"
+
+# The whole point: a write that would land on top of someone else.
+stale=$(etag "$E" Notes)
+printf '\nfrom another agent\n' | run org append "$E" Notes >/dev/null
+out=$(run org create --if-match "$stale" "$E" Notes 2>&1 <<'EOF'
+mine
+EOF
+)
+expect_exit "stale --if-match exits 2" 2 $?
+echo "$out" | grep -q "Changed in Emacs since" \
+  && ok "stale says what happened" || bad "stale message: $out"
+grep -q 'from another agent' "$E" \
+  && ok "the other write survived" || bad "clobbered: $(cat "$E")"
+grep -q '^mine$' "$E" && bad "stale write landed anyway" || ok "stale write wrote nothing"
+
+# Re-read, then the same write goes through.
+run org create --if-match "$(etag "$E" Notes)" "$E" Notes >/dev/null <<'EOF'
+mine
+EOF
+expect_exit "re-read then write exits 0" 0 $?
+grep -q '^mine$' "$E" && ok "the retry landed" || bad "retry lost: $(cat "$E")"
+
+# A content etag does not authorise taking the children too.
+out=$(run org delete --if-match "$(etag "$E" Notes)" "$E" Notes 2>&1)
+expect_exit "wrong-scope etag exits 2" 2 $?
+echo "$out" | grep -q -- "--subtree --with-etag" \
+  && ok "wrong scope names the right read" || bad "wrong scope: $out"
+
+out=$(run org delete "$E" Notes 2>&1)
+expect_exit "delete without --if-match exits 2" 2 $?
+echo "$out" | grep -q "needs --if-match" \
+  && ok "missing etag says so" || bad "missing etag: $out"
 
 # --- private tags: refused at the client, hidden in the outline ---
 run org create --tag noai "$F" Notes Secret >/dev/null <<'EOF'

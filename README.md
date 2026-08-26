@@ -21,7 +21,8 @@ instead of raw `emacsclient --eval`.
   section's content, structure has its own commands. Babel blocks are the
   exception: `blocks|block|set-block|run|tangle --block` address a
   `#+name:`, so one block can be rewritten without touching the prose
-  around it. A heading tagged `:noai:` is out of reach — see below.
+  around it. A heading tagged `:noai:` is out of reach, and a command
+  that replaces a whole region wants an etag of it — both below.
 
 ## Wiring
 
@@ -112,6 +113,55 @@ ecl org append ~/org/todo.org Notes <<< x
 Nothing is written and the buffer is left alone, so Emacs still offers its
 own diff on the next visit. That resolution is a human's; these commands
 only decline to pre-empt it.
+
+## Not writing over another agent
+
+Every dispatch is serialised — the daemon is single-threaded — so two
+commands never interleave. What they do instead is lose each other's
+work: read a section, spend a minute composing, write it back over an
+edit that arrived meanwhile.
+
+Most commands cannot do that. `replace` and `cut` need every OLD to still
+be there; `append` and `note` merge; `status`, `effort` and `property`
+set one scalar. The four that replace a whole region blind take an etag
+of that region first:
+
+```sh
+ecl org section --with-etag ~/org/todo.org Notes
+# #+ETAG: content:6f2a1c9d
+# Loose note.
+
+ecl org create --if-match content:6f2a1c9d ~/org/todo.org Notes <<'EOF'
+rewritten
+EOF
+```
+
+Without `--with-etag` the output is unchanged, so pipelines and the
+`block | set-block` round trip are unaffected.
+
+| command | needs | etag covers |
+| --- | --- | --- |
+| `create` with a body or `--clear-body` | on a heading that already exists | the section's content |
+| `set-block` | always | the block body |
+| `delete`, `refile` | always | the whole subtree |
+
+The scope is part of the etag, so handing `delete` a `content:` one is a
+different answer from handing it a stale one:
+
+```sh
+ecl org delete --if-match content:6f2a1c9d ~/org/todo.org Notes
+# ecl: delete checks the subtree; re-read with:
+#        ecl org section --subtree --with-etag ~/org/todo.org Notes
+```
+
+Scoping to what you read also means a concurrent `rename` or `status`
+does not invalidate a body rewrite — those do not conflict. Nothing is
+written on a refusal.
+
+Metadata-only `create` needs no etag (it overwrites no text), and neither
+does creating a heading that is not there yet — there would be nothing to
+match. `ecl-org-require-if-match` lists the guarded commands; set it to
+nil for a scripted bulk edit, and an etag you do pass is still checked.
 
 ## Whose unsaved work it is
 

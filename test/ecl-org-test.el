@@ -95,6 +95,19 @@ echo hi
     (insert-file-contents file)
     (buffer-string)))
 
+(defun ecl-org-test--etag-of (text)
+  "Pull the etag off the #+ETAG: header of TEXT, the way a caller would."
+  (should (string-match "\\`#\\+ETAG: \\([^ \n]+\\)\n" text))
+  (match-string 1 text))
+
+(defun ecl-org-test--etag (file segments &optional subtree)
+  "The etag `ecl-org-section' hands out for SEGMENTS in FILE."
+  (ecl-org-test--etag-of (ecl-org-section file segments subtree t)))
+
+(defun ecl-org-test--block-etag (file name)
+  "The etag `ecl-org-block' hands out for the block named NAME in FILE."
+  (ecl-org-test--etag-of (ecl-org-block file name nil t)))
+
 ;;; ecl-org--args
 
 (ert-deftest ecl-org-test-args-basic ()
@@ -271,7 +284,8 @@ echo hi
 (ert-deftest ecl-org-test-set-block-escapes-heading-like-lines ()
   "An unescaped `*' line would end the block and fork the outline."
   (ecl-org-test--with-file f
-    (ecl-org-set-block f "greet" "* still not a heading\n#+end_src\n")
+    (ecl-org-set-block f "greet" "* still not a heading\n#+end_src\n"
+                       (ecl-org-test--block-etag f "greet"))
     (should (string-search ",* still not a heading"
                            (ecl-org-test--file-string f)))
     (should (equal (ecl-org-block f "greet")
@@ -294,7 +308,8 @@ echo hi
 (ert-deftest ecl-org-test-set-block-keeps-neighbours ()
   "The regression this exists for: a whole-body rewrite drops the prose."
   (ecl-org-test--with-file f
-    (should (equal (ecl-org-set-block f "greet" "echo replaced\n")
+    (should (equal (ecl-org-set-block f "greet" "echo replaced\n"
+                                      (ecl-org-test--block-etag f "greet"))
                    "updated block greet"))
     (let ((s (ecl-org-section f '("Snippets"))))
       (should (string-search "echo replaced" s))
@@ -308,7 +323,8 @@ echo hi
   "Reading a block and writing it back must not re-indent it."
   (ecl-org-test--with-file f
     (let ((before (ecl-org-test--file-string f)))
-      (ecl-org-set-block f "greet" (ecl-org-block f "greet"))
+      (ecl-org-set-block f "greet" (ecl-org-block f "greet")
+                         (ecl-org-test--block-etag f "greet"))
       (should (equal before (ecl-org-test--file-string f))))))
 
 ;;; create
@@ -359,7 +375,8 @@ echo hi
 
 (ert-deftest ecl-org-test-create-body-replace-preserves-drawer ()
   (ecl-org-test--with-file f
-    (ecl-org-create f '("Projects" "Ship v2") nil nil nil nil nil nil "New body.\n")
+    (ecl-org-create f '("Projects" "Ship v2") nil nil nil nil nil nil "New body.\n"
+                    (ecl-org-test--etag f '("Projects" "Ship v2")))
     (let ((s (ecl-org-section f '("Projects" "Ship v2"))))
       (should (string-search ":Owner: alice" s))
       (should (string-search "New body." s))
@@ -367,7 +384,8 @@ echo hi
 
 (ert-deftest ecl-org-test-create-clear-body ()
   (ecl-org-test--with-file f
-    (ecl-org-create f '("Projects" "Ship v2") nil nil nil nil nil t "")
+    (ecl-org-create f '("Projects" "Ship v2") nil nil nil nil nil t ""
+                    (ecl-org-test--etag f '("Projects" "Ship v2")))
     (let ((s (ecl-org-section f '("Projects" "Ship v2"))))
       (should (string-search ":Owner: alice" s))
       (should-not (string-search "Body line one." s)))))
@@ -381,7 +399,8 @@ echo hi
 
 (ert-deftest ecl-org-test-delete-removes-subtree ()
   (ecl-org-test--with-file f
-    (ecl-org-delete f '("Projects" "Ship v2"))
+    (ecl-org-delete f '("Projects" "Ship v2")
+                    (ecl-org-test--etag f '("Projects" "Ship v2") t))
     (should-error (ecl-org-section f '("Projects" "Ship v2")))
     (should (ecl-org-section f '("Projects")))))
 
@@ -397,7 +416,8 @@ echo hi
 
 (ert-deftest ecl-org-test-refile-under-sibling ()
   (ecl-org-test--with-file f
-    (should (equal (ecl-org-refile f '("Projects" "Ship v2") nil '("Notes"))
+    (should (equal (ecl-org-refile f '("Projects" "Ship v2") nil '("Notes")
+                                   (ecl-org-test--etag f '("Projects" "Ship v2") t))
                    "refiled Projects > Ship v2 -> Notes"))
     (should-error (ecl-org-section f '("Projects" "Ship v2")))
     (let ((o (ecl-org-outline f)))
@@ -405,7 +425,8 @@ echo hi
 
 (ert-deftest ecl-org-test-refile-to-top-level ()
   (ecl-org-test--with-file f
-    (should (equal (ecl-org-refile f '("Projects" "Ship v2"))
+    (should (equal (ecl-org-refile f '("Projects" "Ship v2") nil nil
+                                   (ecl-org-test--etag f '("Projects" "Ship v2") t))
                    "refiled Projects > Ship v2 -> top level"))
     (let ((o (ecl-org-outline f)))
       (should (string-search "\n* Ship v2\n** QA" o)))
@@ -414,7 +435,8 @@ echo hi
 (ert-deftest ecl-org-test-refile-cross-file ()
   (ecl-org-test--with-file f
     (ecl-org-test--with-file g
-      (ecl-org-refile f '("Projects" "Ship v2") g '("Notes"))
+      (ecl-org-refile f '("Projects" "Ship v2") g '("Notes")
+                      (ecl-org-test--etag f '("Projects" "Ship v2") t))
       (should-error (ecl-org-section f '("Projects" "Ship v2")))
       ;; Both buffers saved: check the files on disk.
       (should-not (string-search "Ship v2" (ecl-org-test--file-string f)))
@@ -423,7 +445,8 @@ echo hi
 (ert-deftest ecl-org-test-refile-into-self-errors ()
   (ecl-org-test--with-file f
     (let ((before (ecl-org-test--file-string f)))
-      (should-error (ecl-org-refile f '("Projects") nil '("Projects" "Ship v2")))
+      (should-error (ecl-org-refile f '("Projects") nil '("Projects" "Ship v2")
+                                    (ecl-org-test--etag f '("Projects") t)))
       (should (equal before (ecl-org-test--file-string f))))))
 
 (ert-deftest ecl-org-test-refile-missing-dest-errors ()
@@ -435,7 +458,8 @@ echo hi
 (ert-deftest ecl-org-test-refile-logs-when-configured ()
   (ecl-org-test--with-file f
     (let ((org-log-refile 'time))
-      (ecl-org-refile f '("Projects" "Ship v2") nil '("Notes")))
+      (ecl-org-refile f '("Projects" "Ship v2") nil '("Notes")
+                      (ecl-org-test--etag f '("Projects" "Ship v2") t)))
     (should (string-search "Refiled on"
                            (ecl-org-section f '("Notes" "Ship v2"))))))
 
@@ -647,6 +671,123 @@ is not what the next command would edit."
     ;; The conflict survives intact, for the user to resolve in Emacs.
     (should (equal (ecl-org-test--file-string f) "* Notes\nDisk moved on.\n"))
     (should (buffer-modified-p (find-buffer-visiting f)))))
+
+;;; etags  (losing each other's work)
+
+(ert-deftest ecl-org-test-etag-tracks-the-text-it-covers ()
+  (ecl-org-test--with-file f
+    (let ((one (ecl-org-test--etag f '("Notes"))))
+      (should (string-prefix-p "content:" one))
+      (should (equal one (ecl-org-test--etag f '("Notes"))))
+      (ecl-org-append-section f '("Notes") "\nthird note.\n")
+      (should-not (equal one (ecl-org-test--etag f '("Notes")))))))
+
+(ert-deftest ecl-org-test-etag-scopes-are-distinct ()
+  "A body rewrite and a subtree delete are not the same precondition."
+  (ecl-org-test--with-file f
+    (let ((content (ecl-org-test--etag f '("Projects" "Ship v2")))
+          (subtree (ecl-org-test--etag f '("Projects" "Ship v2") t)))
+      (should (string-prefix-p "content:" content))
+      (should (string-prefix-p "subtree:" subtree))
+      ;; A child changing moves the subtree etag and leaves the content one.
+      (ecl-org-append-section f '("Projects" "Ship v2" "QA") "\nmore QA.\n")
+      (should (equal content (ecl-org-test--etag f '("Projects" "Ship v2"))))
+      (should-not (equal subtree (ecl-org-test--etag f '("Projects" "Ship v2") t))))))
+
+(ert-deftest ecl-org-test-with-etag-does-not-change-the-plain-read ()
+  "Pipelines and the block round trip depend on the bare output being bare."
+  (ecl-org-test--with-file f
+    (should-not (string-search "#+ETAG:" (ecl-org-section f '("Notes"))))
+    (should-not (string-search "#+ETAG:" (ecl-org-block f "greet")))
+    ;; The tagged form is the header line and then the bare form, verbatim.
+    (let ((plain (ecl-org-section f '("Notes")))
+          (tagged (ecl-org-section f '("Notes") nil t)))
+      (should (string-match "\\`#\\+ETAG: content:[0-9a-f]\\{12\\}\n" tagged))
+      (should (equal (substring tagged (match-end 0)) plain)))))
+
+(ert-deftest ecl-org-test-if-match-is-required-for-a-blind-write ()
+  (ecl-org-test--with-file f
+    (let ((before (ecl-org-test--file-string f)))
+      (dolist (thunk
+               (list (lambda () (ecl-org-delete f '("Notes")))
+                     (lambda () (ecl-org-refile f '("Notes") nil '("Projects")))
+                     (lambda () (ecl-org-set-block f "greet" "echo new\n"))
+                     (lambda () (ecl-org-create f '("Notes") nil nil nil nil nil
+                                                nil "rewritten\n"))))
+        (should (string-search "needs --if-match"
+                               (cadr (should-error (funcall thunk))))))
+      (should (equal before (ecl-org-test--file-string f))))))
+
+(ert-deftest ecl-org-test-if-match-not-required-when-nothing-is-overwritten ()
+  "Metadata overwrites no text, and a new heading has nothing to match."
+  (ecl-org-test--with-file f
+    (ecl-org-create f '("Projects" "Ship v2") "TODO" "1:00" '("core")
+                    '("Owner=bob") nil nil "")
+    (should (equal (ecl-org-get-property f '("Projects" "Ship v2") "Owner") "bob"))
+    (ecl-org-create f '("Notes" "Fresh") nil nil nil nil t nil "brand new.\n")
+    (should (string-search "brand new." (ecl-org-section f '("Notes" "Fresh"))))))
+
+(ert-deftest ecl-org-test-if-match-for-a-heading-that-is-not-there ()
+  (ecl-org-test--with-file f
+    (should (string-search "--if-match wants one that exists"
+                           (cadr (should-error
+                                  (ecl-org-create f '("Notes" "Absent") nil nil nil
+                                                  nil t nil "x\n" "content:0")))))))
+
+(ert-deftest ecl-org-test-if-match-refuses-a-stale-etag ()
+  "The lost update this all exists for."
+  (ecl-org-test--with-file f
+    (let ((stale (ecl-org-test--etag f '("Notes"))))
+      ;; Somebody else gets there first.
+      (ecl-org-append-section f '("Notes") "\nfrom another agent.\n")
+      (let ((before (ecl-org-test--file-string f)))
+        (should (string-search "Changed in Emacs since"
+                               (cadr (should-error
+                                      (ecl-org-create f '("Notes") nil nil nil nil
+                                                      nil nil "mine.\n" stale)))))
+        (should (equal before (ecl-org-test--file-string f)))
+        (should (string-search "from another agent."
+                               (ecl-org-section f '("Notes"))))))))
+
+(ert-deftest ecl-org-test-if-match-refuses-the-wrong-scope ()
+  "A content etag says nothing about the children delete would take."
+  (ecl-org-test--with-file f
+    (let ((err (should-error
+                (ecl-org-delete f '("Projects" "Ship v2")
+                                (ecl-org-test--etag f '("Projects" "Ship v2"))))))
+      (should (string-search "delete checks the subtree" (cadr err)))
+      (should (string-search "--subtree --with-etag" (cadr err))))))
+
+(ert-deftest ecl-org-test-if-match-hint-names-the-actual-target ()
+  "The message has to be runnable, quoting and all."
+  (ecl-org-test--with-file f
+    (let ((err (should-error
+                (ecl-org-delete f '("Projects" "API /v2/payouts endpoint")))))
+      (should (string-search (shell-quote-argument f) (cadr err)))
+      (should (string-search (shell-quote-argument "API /v2/payouts endpoint")
+                             (cadr err))))))
+
+(ert-deftest ecl-org-test-require-if-match-nil-lifts-it ()
+  "The escape hatch for a bulk edit that cannot thread etags through."
+  (ecl-org-test--with-file f
+    (let ((ecl-org-require-if-match nil))
+      (ecl-org-delete f '("Notes"))
+      (should-error (ecl-org-section f '("Notes"))))))
+
+(ert-deftest ecl-org-test-require-if-match-nil-still-honours-one ()
+  (ecl-org-test--with-file f
+    (let* ((ecl-org-require-if-match nil)
+           (stale (ecl-org-test--etag f '("Notes") t)))
+      (ecl-org-append-section f '("Notes") "\nmeanwhile.\n")
+      (should-error (ecl-org-delete f '("Notes") stale))
+      (should (ecl-org-section f '("Notes"))))))
+
+(ert-deftest ecl-org-test-private-refusal-comes-before-the-etag ()
+  "Otherwise a private heading would answer `needs --if-match', which is a
+different thing and invites a retry."
+  (ecl-org-test--with-private-file f
+    (should (string-search "not available to agents"
+                           (cadr (should-error (ecl-org-delete f '("Public"))))))))
 
 ;;; ecl-org--save  (whose unsaved work is it)
 
