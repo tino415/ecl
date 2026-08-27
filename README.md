@@ -15,6 +15,10 @@ instead of raw `emacsclient --eval`.
 - `ecl-browse.el` — browser module: `ecl browse-url URL` opens a page
   through the daemon's `browse-url`, after a y-or-n-p in Emacs. The
   target must be a URL with a scheme.
+- `ecl-shell.el` — shell module: `ecl shell run` shows a command in an
+  Emacs buffer, runs it in the caller's folder once approved, and answers
+  with a handle to read the output back by (`wait`, `output`, `list`,
+  `kill`).
 - `ecl-org.el` — org module: heading-addressed queries and edits
   (`ecl org outline|section|append|replace|cut|create|delete|rename|refile|...`).
   Headings are positional path segments; text edits are scoped to a
@@ -40,6 +44,10 @@ instead of raw `emacsclient --eval`.
 (use-package ecl-browse           ; browse-url, gated on y-or-n-p
   :after ecl
   :config (ecl-register ecl-browse-command))
+
+(use-package ecl-shell            ; shell commands, gated on approval
+  :after ecl
+  :config (ecl-register ecl-shell-command-group))
 
 (use-package my-local-module      ; your own glue registers the same way
   :after ecl
@@ -203,6 +211,47 @@ client immediately; the client polls `ecl-poll` until the UI calls
 `ecl-pending-resolve`, and sends `ecl-cancel` if it is killed first. So
 Emacs stays usable — including for the review itself — while a request
 waits, and no review buffer outlives its caller.
+
+## Running a shell command
+
+```sh
+cd ~/Projects/thing
+printf 'mix test --only integration' | ecl shell run
+# 3
+# read it back with: ecl shell wait 3
+```
+
+The command lands in an `*ecl shell approve N*` buffer — `sh-mode`, so it
+is font-locked and **editable** — with the folder it would run in on the
+header line. `C-c C-c` runs the buffer as it stands, `C-c C-k` denies with
+a reason, killing the buffer denies. Same protocol as `ecl eval` above,
+and the same absence of a timeout.
+
+That folder is the client's working directory and nothing else. There is
+no flag to point it elsewhere: a caller picks the folder by being in it,
+the way every other shell tool works.
+
+Approval answers with a handle rather than with output. The command runs
+in a compilation buffer the user can watch, and the caller reads it back:
+
+| command | |
+| --- | --- |
+| `ecl shell wait 3` | the whole output, once it exits; exit 2 if the command failed |
+| `ecl shell output 3` | what it has printed so far, without waiting |
+| `ecl shell output 3 --from 512` | the same, past the first 512 characters |
+| `ecl shell list` | handle, status and command for every job still held |
+| `ecl shell kill 3` | interrupt it; the output stays readable |
+
+`wait` is a pending request like the approval itself, so a caller sitting
+on a slow test suite does not stop the daemon answering everything else.
+Interrupting a `wait` abandons the reading, not the command — `kill` is
+for that.
+
+A handle is all these commands take, and handles only name jobs that
+`ecl shell run` started. An arbitrary Emacs buffer cannot be spelled, so
+`output` stays a way to read your own command back rather than a reader
+for the rest of the session. A job is held until its buffer is killed,
+and `ecl shell list` is what is still there.
 
 ## Tests
 

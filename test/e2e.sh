@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 SOCK="$PWD/.e2e/socket"
 export ECL_SERVER="$SOCK"
-ECL=./bin/ecl
+ECL="$PWD/bin/ecl"   # absolute: some cases run the client from another cwd
 PASS=0
 FAIL=0
 
@@ -464,6 +464,110 @@ expect_exit "browse-url denied exits 3" 3 $?
 emacsclient -s "$SOCK" -e '(setq e2e-allow t)' >/dev/null 2>&1
 run browse-url "$WORK/report.html" >/dev/null 2>&1
 expect_exit "target without a scheme exits 2" 2 $?
+
+# --- shell: approve once, then read the job back by handle ---
+# Same trick as eval, on this module's own review buffers.  The folder a
+# command runs in is the client's cwd, so the client is run from $WORK
+# and `pwd' in the command is what proves it.
+decide_shell() {
+  local i=0
+  while [ $i -lt 100 ]; do
+    if [ "$(emacsclient -s "$SOCK" -e '(and (ecl-shell--review-buffers) t)' 2>/dev/null)" = "t" ]; then
+      emacsclient -s "$SOCK" -e \
+        "(with-current-buffer (car (ecl-shell--review-buffers)) $1)" >/dev/null 2>&1
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  echo "decide_shell: no review buffer appeared"
+  return 1
+}
+
+# `exec' so the pid we hold is the client's, not a subshell's -- the
+# killed-client case below sends the signal to it directly.
+shell_run() { printf '%s' "$1" | (cd "$WORK"; exec "$ECL" shell run); }
+
+shell_run 'echo hi; pwd' > "$WORK/sh.out" 2>"$WORK/sh.err" &
+pid=$!
+decide_shell '(ecl-shell-approve)'
+wait $pid; expect_exit "shell approved exits 0" 0 $?
+handle=$(head -1 "$WORK/sh.out")
+[ -n "$handle" ] \
+  && ok "shell run answers with a handle" || bad "no handle: $(cat "$WORK/sh.out")"
+grep -q 'ecl shell wait' "$WORK/sh.out" \
+  && ok "shell run says how to read it back" || bad "no hint: $(cat "$WORK/sh.out")"
+grep -q 'waiting for approval' "$WORK/sh.err" \
+  && ok "shell announces the wait on stderr" || bad "shell wait notice missing"
+
+out=$(run shell wait "$handle")
+expect_exit "shell wait exits 0" 0 $?
+echo "$out" | grep -qx 'hi' \
+  && ok "shell wait prints the output" || bad "shell output: $out"
+echo "$out" | grep -q "$(basename "$WORK")" \
+  && ok "the command ran in the client's cwd" || bad "wrong folder: $out"
+echo "$out" | grep -q 'Compilation' \
+  && bad "compilation-mode lines reached the caller: $out" \
+  || ok "output is the command's, not Emacs' commentary"
+
+shell_run 'echo wrong' > "$WORK/sedit.out" 2>/dev/null &
+pid=$!
+decide_shell '(erase-buffer) (insert "echo right") (ecl-shell-approve)'
+wait $pid; expect_exit "edited command approved exits 0" 0 $?
+out=$(run shell wait "$(head -1 "$WORK/sedit.out")")
+echo "$out" | grep -qx 'right' \
+  && ok "shell runs the edited buffer" || bad "edited buffer: $out"
+
+shell_run 'rm -rf /' > "$WORK/sdeny.out" 2>&1 &
+pid=$!
+decide_shell '(ecl-shell-deny "not that one")'
+wait $pid; expect_exit "shell denied exits 3" 3 $?
+grep -q 'denied: not that one' "$WORK/sdeny.out" \
+  && ok "deny reason reaches the caller" || bad "deny: $(cat "$WORK/sdeny.out")"
+
+shell_run 'echo oops; exit 3' > "$WORK/sfail.out" 2>/dev/null &
+pid=$!
+decide_shell '(ecl-shell-approve)'
+wait $pid
+out=$(run shell wait "$(head -1 "$WORK/sfail.out")" 2>&1)
+expect_exit "a failed command makes wait exit 2" 2 $?
+echo "$out" | grep -q 'oops' \
+  && ok "failure carries the output" || bad "failure output: $out"
+echo "$out" | grep -q 'exited 3' \
+  && ok "failure carries the exit status" || bad "exit status missing: $out"
+
+# A job still running: output must answer at once, and kill must stop it.
+shell_run 'sleep 30' > "$WORK/sslow.out" 2>/dev/null &
+pid=$!
+decide_shell '(ecl-shell-approve)'
+wait $pid
+handle=$(head -1 "$WORK/sslow.out")
+timeout 5 "$ECL" shell output "$handle" >/dev/null 2>&1
+expect_exit "output does not wait for the command" 0 $?
+run shell list | grep -q "$handle" \
+  && ok "list shows the running job" || bad "list: $(run shell list)"
+run shell kill "$handle" >/dev/null 2>&1
+expect_exit "kill exits 0" 0 $?
+
+run shell wait 999999 >/dev/null 2>&1
+expect_exit "an unknown handle exits 2" 2 $?
+
+# Client killed mid-wait: the daemon must not keep the review buffer.
+# Spelled out rather than via shell_run, so $! is the client itself and
+# not the subshell a backgrounded function call would put in between.
+printf 'true' | (cd "$WORK"; exec "$ECL" shell run) >/dev/null 2>&1 &
+pid=$!
+decide_shell '(ignore)'
+kill "$pid" 2>/dev/null
+wait $pid 2>/dev/null
+sleep 0.5
+[ "$(emacsclient -s "$SOCK" -e '(and (ecl-shell--review-buffers) t)' 2>/dev/null)" = "nil" ] \
+  && ok "killed client cancels the review buffer" || bad "review buffer leaked"
+
+out=$(run shell run --help)
+expect_exit "shell run --help exits 0" 0 $?
+echo "$out" | grep -q "usage: ecl shell run \[COMMAND...\]" \
+  && ok "shell run --help shows :usage line" || bad "shell run --help usage line"
 
 echo
 echo "e2e: $PASS passed, $FAIL failed"
