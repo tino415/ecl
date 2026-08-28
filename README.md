@@ -89,6 +89,18 @@ which is what these commands read.
 This gates the sanctioned tool path, not the file. Anything that can run
 `cat` on the org file reads it regardless; for that, deny the file.
 
+## Where a new heading lands
+
+`create` puts a missing leaf at the end of its parent — below a trailing
+`* Archive :ARCHIVE:`, not above it. `refile` lands there too.
+
+This matches Org: `org-capture` into `(file F)` and `(file+headline F H)`
+both append below the archive sibling, `org-refile` does the same, and
+`org-archive-to-archive-sibling` only ever creates that sibling "at the end
+of the subtree". Org's one lever is first-child vs last-child (`:prepend`,
+`org-reverse-note-order`), which is a different axis. `C-c C-w` and `C-c c`
+already do this to you, so nothing here special-cases it.
+
 ## Questions nobody can answer
 
 Emacs is single-threaded. A command that reaches `y-or-n-p` with only a
