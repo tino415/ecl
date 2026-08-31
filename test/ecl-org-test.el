@@ -40,6 +40,28 @@ Prose before the block.
 Prose after the block.
 ")
 
+(defvar ecl-org-test--link-fixture
+  "#+TODO: TODO(t!) WAITING(w@) | DONE(d!)
+
+* Links
+** [[~/p/CLAUDE.local.md][CLAUDE.local.md]]
+Link heading body.
+*** TODO pozri si nieco k [[BASP]]
+Nested body.
+** [[Payout CRU]]
+Bare link body.
+* Both
+** CLAUDE.local.md
+Plain body.
+** [[~/p/x.md][CLAUDE.local.md]]
+Linked body.
+* Twins
+** [[~/a.md][same]]
+First body.
+** [[~/b.md][same]]
+Second body.
+")
+
 (defvar ecl-org-test--private-fixture
   "#+TODO: TODO(t!) WAITING(w@) | DONE(d!)
 
@@ -83,6 +105,11 @@ echo hi
   "Bind VAR to a temp org file with the fixture content around BODY."
   (declare (indent 1))
   `(ecl-org-test--with-content ,var ecl-org-test--fixture ,@body))
+
+(defmacro ecl-org-test--with-link-file (var &rest body)
+  "Bind VAR to a temp org file with the link-heading fixture around BODY."
+  (declare (indent 1))
+  `(ecl-org-test--with-content ,var ecl-org-test--link-fixture ,@body))
 
 (defmacro ecl-org-test--with-private-file (var &rest body)
   "Bind VAR to a temp org file with the private-tag fixture around BODY."
@@ -198,6 +225,65 @@ echo hi
     (let ((err (should-error
                 (ecl-org-set-property f '("Projects" "QA") "Owner" "bob"))))
       (should (string-search "taken as NAME VALUE" (cadr err))))))
+
+;;; link headings addressed by display text
+
+(ert-deftest ecl-org-test-link-heading-by-description ()
+  (ecl-org-test--with-link-file f
+    (should (string-search "Link heading body."
+                           (ecl-org-section f '("Links" "CLAUDE.local.md"))))))
+
+(ert-deftest ecl-org-test-link-heading-by-raw-title ()
+  (ecl-org-test--with-link-file f
+    (should (string-search
+             "Link heading body."
+             (ecl-org-section f '("Links" "[[~/p/CLAUDE.local.md][CLAUDE.local.md]]"))))))
+
+(ert-deftest ecl-org-test-link-heading-without-description ()
+  "A bare `[[target]]' displays as its target, so that is what addresses it."
+  (ecl-org-test--with-link-file f
+    (should (string-search "Bare link body."
+                           (ecl-org-section f '("Links" "Payout CRU"))))))
+
+(ert-deftest ecl-org-test-link-inside-longer-title ()
+  "The link is stripped in place; the TODO keyword is Org's to strip."
+  (ecl-org-test--with-link-file f
+    (should (string-search
+             "Nested body."
+             (ecl-org-section f '("Links" "CLAUDE.local.md" "pozri si nieco k BASP"))))))
+
+(ert-deftest ecl-org-test-link-heading-literal-sibling-wins ()
+  "A plain heading keeps the name; its linked sibling wants the raw form."
+  (ecl-org-test--with-link-file f
+    (should (string-search "Plain body."
+                           (ecl-org-section f '("Both" "CLAUDE.local.md"))))
+    (should (string-search "Linked body."
+                           (ecl-org-section f '("Both" "[[~/p/x.md][CLAUDE.local.md]]"))))))
+
+(ert-deftest ecl-org-test-link-heading-ambiguous-display-errors ()
+  (ecl-org-test--with-link-file f
+    (let ((err (should-error (ecl-org-section f '("Twins" "same")))))
+      (should (string-search "display as" (cadr err)))
+      (should (string-search "same" (cadr err))))))
+
+(ert-deftest ecl-org-test-link-heading-unknown-keeps-no-child-error ()
+  (ecl-org-test--with-link-file f
+    (let ((err (should-error (ecl-org-section f '("Links" "Nope")))))
+      (should (string-search "No child" (cadr err)))
+      (should (string-search "Links" (cadr err))))))
+
+(ert-deftest ecl-org-test-create-by-description-updates-not-duplicates ()
+  "Without this, `create' would not see the link heading and append a twin."
+  (ecl-org-test--with-link-file f
+    (should (equal (ecl-org-create f '("Links" "CLAUDE.local.md")
+                                   nil nil nil '("Owner=alice") nil nil nil)
+                   "updated Links > [[~/p/CLAUDE.local.md][CLAUDE.local.md]]"))
+    (should (equal "alice"
+                   (ecl-org-get-property f '("Links" "CLAUDE.local.md") "Owner")))
+    (should (equal 1 (seq-count
+                      (lambda (line)
+                        (string-suffix-p "[[~/p/CLAUDE.local.md][CLAUDE.local.md]]" line))
+                      (split-string (ecl-org-test--file-string f) "\n"))))))
 
 ;;; append
 

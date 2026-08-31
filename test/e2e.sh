@@ -78,6 +78,9 @@ cat > "$F" <<'EOF'
 Endpoint notes.
 * Notes
 Loose note.
+* Links
+** [[~/p/CLAUDE.local.md][CLAUDE.local.md]]
+Link heading body.
 * Snippets
 Prose before the block.
 
@@ -108,6 +111,17 @@ out=$(run org section "$F" Projects "API /v2/payouts endpoint")
 expect_exit "slash-title section exits 0" 0 $?
 echo "$out" | grep -q "Endpoint notes." \
   && ok "slash-title section content" || bad "slash-title section content"
+
+# --- link headings answer to their display text as well as their raw form ---
+out=$(run org section "$F" Links "CLAUDE.local.md")
+expect_exit "link-title section by description exits 0" 0 $?
+echo "$out" | grep -q "Link heading body." \
+  && ok "link-title section by description" || bad "link-title by description"
+
+out=$(run org section "$F" Links "[[~/p/CLAUDE.local.md][CLAUDE.local.md]]")
+expect_exit "link-title section by raw title exits 0" 0 $?
+echo "$out" | grep -q "Link heading body." \
+  && ok "link-title section by raw title" || bad "link-title by raw title"
 
 # --- create: heredoc body + metadata, then </dev/null upsert ---
 run org create --todo TODO --tag api --property Owner=bob "$F" Projects "Rate limiting" >/dev/null <<'EOF'

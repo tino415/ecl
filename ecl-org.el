@@ -13,6 +13,14 @@
 ;; heading; the tree structure is only reachable through its own
 ;; commands (create, delete, rename, refile, status).
 ;;
+;; A segment is the heading's text as written, and a heading whose title
+;; holds a link also answers to that link's display text -- so
+;; `[[~/p/x.md][x.md]]' is reachable as `x.md'.  The literal form is
+;; tried first, so a plain sibling of the same name still wins.  Org's
+;; own lookup does the literal pass and sees past stats cookies; the
+;; fallback does not, so a heading carrying both a cookie and a link
+;; wants the cookie in the segment.
+;;
 ;; Babel blocks are the exception to path addressing: blocks, block,
 ;; set-block, run and tangle --block take a #+name: instead of an
 ;; outline path, so they keep working when a section is moved or
@@ -187,28 +195,110 @@ its values in a list, in order of appearance."
       (append (list (nreverse opts) file (seq-take args nsegs))
               (seq-drop args nsegs)))))
 
+(defun ecl-org--title-equal (a b)
+  "Compare heading titles A and B under the buffer's `case-fold-search'.
+Org resolves a path by regexp search, so it folds case when the daemon
+does; the link fallback below follows it rather than being pickier than
+the pass it backs up."
+  (eq t (compare-strings a nil nil b nil nil case-fold-search)))
+
+(defun ecl-org--child-titles (parent-path)
+  "Raw titles of the headings directly under PARENT-PATH; nil is the top level.
+The child level is read off the first heading in scope rather than added
+to the parent's, so `org-odd-levels-only' needs no case of its own."
+  (save-excursion
+    (let (beg end)
+      (if parent-path
+          (progn
+            (goto-char (org-find-olp parent-path t))
+            (setq beg (line-end-position)
+                  end (save-excursion (org-end-of-subtree t t) (point))))
+        (setq beg (point-min) end (point-max)))
+      (goto-char beg)
+      (let (level titles)
+        (while (re-search-forward org-outline-regexp-bol end t)
+          (let ((depth (- (match-end 0) (match-beginning 0) 1)))
+            (unless level (setq level depth))
+            (when (= depth level)
+              (push (nth 4 (org-heading-components)) titles))))
+        (nreverse titles)))))
+
+(defun ecl-org--linked-segment (parent-path seg)
+  "Raw title of the child of PARENT-PATH whose link display text is SEG.
+Nil when none displays as SEG.  Reached only after a literal lookup came
+up empty, so `[[~/p/x.md][x.md]]' answers to `x.md' while a plain sibling
+of that name still wins.  `org-link-display-format' strips every link in
+the title, so a link sitting inside a longer heading counts too."
+  (let ((matches (seq-uniq
+                  (seq-filter
+                   (lambda (title)
+                     (ecl-org--title-equal (org-link-display-format title) seg))
+                   (ecl-org--child-titles parent-path)))))
+    (pcase matches
+      ('() nil)
+      (`(,title) title)
+      (_ (error "Several children of %s display as %S; give the heading text in full"
+                (if parent-path (format "\"%s\"" (string-join parent-path " > "))
+                  "the top level")
+                seg)))))
+
+(defun ecl-org--olp-try (parent-path seg)
+  "(POSITION . SEG) when PARENT-PATH > SEG resolves literally, else nil.
+`org-find-olp' tells a missing heading apart from an ambiguous one and
+only the first is a nil here -- the second is raised, because retrying it
+against link display text would pick one of the two at random."
+  (condition-case err
+      (cons (org-find-olp (append parent-path (list seg)) t) seg)
+    (error
+     (when (string-prefix-p "Heading not unique" (error-message-string err))
+       (signal (car err) (cdr err)))
+     nil)))
+
+(defun ecl-org--olp-step (parent-path seg)
+  "Resolve one SEG under PARENT-PATH as (POSITION . TITLE-AS-WRITTEN), or nil.
+Literal first -- Org's own lookup, which already sees past the stars, a
+TODO keyword, a priority, stats cookies and tags -- and only when that
+finds nothing, the child whose link display text is SEG."
+  (or (ecl-org--olp-try parent-path seg)
+      (when-let ((raw (ecl-org--linked-segment parent-path seg)))
+        (ecl-org--olp-try parent-path raw))))
+
+(defun ecl-org--resolve-olp (segments)
+  "Walk SEGMENTS in the current buffer as far as they resolve.
+Returns (POSITION RESOLVED MISSING): POSITION of the last segment that
+resolved, RESOLVED the path as the buffer writes it -- link headings
+under their raw title, whichever form was asked for -- and MISSING the
+segments left over.  Only an ambiguous segment signals from here; callers
+word the miss themselves."
+  (let ((n (length segments)) (i 0) pos resolved)
+    (catch 'stuck
+      (while (< i n)
+        (let ((hit (ecl-org--olp-step resolved (nth i segments))))
+          (unless hit (throw 'stuck nil))
+          (setq pos (car hit)
+                resolved (append resolved (list (cdr hit)))
+                i (1+ i)))))
+    (list pos resolved (nthcdr i segments))))
+
 (defun ecl-org--find-olp (segments &optional trailing)
   "Resolve SEGMENTS as an outline path in the current buffer; return position.
-Resolution is progressive: on failure the error names the resolved prefix
-and the missing child, so a mis-split argv is visible.  TRAILING, when
-given, is appended to the error -- callers with fixed back data use it to
-show which arguments were NOT taken as path segments.
+A segment is the heading's text as written, and a heading whose title
+holds a link also answers to its display text.  Resolution is
+progressive: on failure the error names the resolved prefix and the
+missing child, so a mis-split argv is visible.  TRAILING, when given, is
+appended to the error -- callers with fixed back data use it to show
+which arguments were NOT taken as path segments.
 
 Every path-addressed command comes through here, so this is also where a
 heading tagged with one of `ecl-org-private-tags' is refused; inheritance
 means one check at the resolved position covers its ancestors too."
-  (let (found pos)
-    (dolist (seg segments)
-      (let ((path (append found (list seg))))
-        (condition-case nil
-            (setq pos (org-find-olp path t))
-          (error
-           (error "No child %S under %s%s"
-                  seg
-                  (if found (format "\"%s\"" (string-join found " > "))
-                    "the top level")
-                  (or trailing ""))))
-        (setq found path)))
+  (pcase-let ((`(,pos ,resolved ,missing) (ecl-org--resolve-olp segments)))
+    (when missing
+      (error "No child %S under %s%s"
+             (car missing)
+             (if resolved (format "\"%s\"" (string-join resolved " > "))
+               "the top level")
+             (or trailing "")))
     (when pos
       (save-excursion
         (goto-char pos)
@@ -868,7 +958,8 @@ that does not exist is an error rather than a silent no-op."
      ;; because the walk that follows creates missing headings as it
      ;; goes -- by the time the leaf is in hand the tree has already
      ;; moved, and a refusal then would leave a heading behind.
-     (let ((existing (condition-case nil (org-find-olp segments t) (error nil))))
+     (let ((existing (pcase-let ((`(,pos ,_ ,missing) (ecl-org--resolve-olp segments)))
+                       (and (null missing) pos))))
        (cond
         (existing
          (save-excursion
@@ -884,18 +975,21 @@ that does not exist is an error rather than a silent no-op."
      (let ((n (length segments)) (i 0) (prefix nil) (created nil) pos)
        (while (< i n)
          (let* ((seg (nth i segments))
-                (path (append prefix (list seg)))
-                (found (condition-case nil (org-find-olp path t) (error nil))))
+                (found (ecl-org--olp-step prefix seg))
+                ;; An existing heading contributes its title as written, so
+                ;; a path given by link display text keeps resolving through
+                ;; the rest of the walk; a new one is created verbatim.
+                (path (append prefix (list (if found (cdr found) seg)))))
            ;; This resolves paths itself instead of through
            ;; `ecl-org--find-olp', so the private check is repeated here --
            ;; on every prefix, which also refuses a new child under a
            ;; private parent.
            (when found
              (save-excursion
-               (goto-char found)
+               (goto-char (car found))
                (ecl-org--check-private (ecl-org--path-label path))))
            (cond
-            (found (setq pos found))
+            (found (setq pos (car found)))
             ((or parents (= i (1- n)))
              (setq pos (ecl-org--insert-child prefix seg) created t))
             (t (error "No child %S under %s; --parents creates intermediates"
@@ -929,8 +1023,10 @@ that does not exist is an error rather than a silent no-op."
            (unless (string-empty-p (or body ""))
              (insert (if (string-suffix-p "\n" body) body (concat body "\n"))))))
        (ecl-org--save)
+       ;; PREFIX, not SEGMENTS: report the heading that was hit, which for a
+       ;; path given by link display text is not what was typed.
        (format "%s %s" (if created "created" "updated")
-               (string-join segments " > "))))))
+               (string-join prefix " > "))))))
 
 (defun ecl-org-delete (file segments &optional if-match)
   "Remove the entire subtree at SEGMENTS in FILE; save.

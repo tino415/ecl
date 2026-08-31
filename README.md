@@ -89,6 +89,40 @@ which is what these commands read.
 This gates the sanctioned tool path, not the file. Anything that can run
 `cat` on the org file reads it regardless; for that, deny the file.
 
+## Headings that are links
+
+A segment is the heading's text as written, and a heading whose title holds
+a link also answers to that link's display text:
+
+```org
+* Projects
+** tino415/eprodukty
+*** [[~/Projects/tino415/eprodukty/CLAUDE.local.md][CLAUDE.local.md]]
+```
+
+```sh
+ecl org section ~/org/runfile.org Projects tino415/eprodukty CLAUDE.local.md
+```
+
+Every link in the title is stripped, so this covers a bare `[[Payout CRU]]`
+and a link sitting inside a longer heading (`pozri si nieco k [[BASP]]`), not
+only a title that is one whole link.
+
+The literal form is tried first — Org's own lookup, which already sees past
+the stars, a TODO keyword, a priority, stats cookies and tags. Only when that
+finds nothing does the display text get a turn, so a plain sibling of the
+same name still wins and keeps its linked sibling reachable by the raw form:
+
+```org
+* CLAUDE.local.md                 <- "CLAUDE.local.md" lands here
+* [[~/p/x.md][CLAUDE.local.md]]   <- reachable by its full [[...]] form
+```
+
+Two children displaying the same is an error naming the segment rather than a
+coin toss. `outline` keeps printing raw heading text — it stays the file's
+literal truth, and both forms address, so its lines are still copy-pasteable
+as segments.
+
 ## Where a new heading lands
 
 `create` puts a missing leaf at the end of its parent — below a trailing
