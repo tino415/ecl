@@ -248,6 +248,49 @@ run org refile --to Nowhere \
   "$F" Notes "API /v2/payouts endpoint" >/dev/null 2>&1
 expect_exit "refile bad dest exits 2" 2 $?
 
+# --- --id: addressing a heading that gets renamed under you ---
+I="$WORK/id.org"
+printf '* Projects\n** Ship v2\nBody line one.\n* Notes\nLoose note.\n' > "$I"
+
+run org id "$I" Projects "Ship v2" >/dev/null 2>&1
+expect_exit "id without --create exits 2" 2 $?
+ID=$(run org id --create "$I" Projects "Ship v2")
+expect_exit "id --create exits 0" 0 $?
+grep -q ":ID: *$ID" "$I" \
+  && ok "the minted ID reached the file" || bad "no ID in: $(cat "$I")"
+
+run org rename --id "$ID" "$I" "Ship v3" >/dev/null
+expect_exit "rename by --id" 0 $?
+out=$(run org section --id "$ID" "$I")
+echo "$out" | grep -q 'Body line one.' \
+  && ok "--id still finds the renamed heading" || bad "--id after rename: $out"
+run org section "$I" Projects "Ship v2" >/dev/null 2>&1
+expect_exit "the old path is gone (exit 2)" 2 $?
+
+out=$(run org section --id "$ID" "$I" Projects 2>&1)
+expect_exit "--id with segments exits 2" 2 $?
+echo "$out" | grep -q "not both" \
+  && ok "--id and a path is refused" || bad "--id with segments: $out"
+
+out=$(run org section --id nosuchid "$I" 2>&1)
+expect_exit "unknown --id exits 2" 2 $?
+echo "$out" | grep -q "No heading with ID nosuchid" \
+  && ok "unknown ID says so" || bad "unknown ID: $out"
+
+# The etag hint has to be a runnable call: flags land before FILE.
+out=$(run org delete --id "$ID" "$I" 2>&1)
+expect_exit "delete by --id needs an etag" 2 $?
+hint=$(echo "$out" | sed -n 's/^ *ecl org /org /p')
+[ -n "$hint" ] && run $hint >/dev/null 2>&1
+expect_exit "the hint it prints runs" 0 $?
+
+run org refile --to-id "$ID" \
+  --if-match "$(etag_sub "$I" Notes)" "$I" Notes >/dev/null
+expect_exit "refile --to-id" 0 $?
+out=$(run org section --subtree --id "$ID" "$I")
+echo "$out" | grep -q '^\*\*\* Notes' \
+  && ok "--to-id moved it under the ID" || bad "refile --to-id: $out"
+
 # --- etags: the read-then-write loop ---
 E="$WORK/etag.org"
 printf '* Notes\nbase line\n' > "$E"

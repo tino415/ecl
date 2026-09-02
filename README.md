@@ -21,8 +21,9 @@ instead of raw `emacsclient --eval`.
   `kill`).
 - `ecl-org.el` — org module: heading-addressed queries and edits
   (`ecl org outline|section|append|replace|cut|create|delete|rename|refile|...`).
-  Headings are positional path segments; text edits are scoped to a
-  section's content, structure has its own commands. Babel blocks are the
+  Headings are positional path segments, or a `--id` in place of the
+  whole path; text edits are scoped to a section's content, structure has
+  its own commands. Babel blocks are the
   exception: `blocks|block|set-block|run|tangle --block` address a
   `#+name:`, so one block can be rewritten without touching the prose
   around it. A heading tagged `:noai:` is out of reach, and a command
@@ -122,6 +123,37 @@ Two children displaying the same is an error naming the segment rather than a
 coin toss. `outline` keeps printing raw heading text — it stays the file's
 literal truth, and both forms address, so its lines are still copy-pasteable
 as segments.
+
+## Headings addressed by ID
+
+A path is spelled out of titles, and titles are what a human edits. `--id`
+addresses the heading carrying that `:ID:` property instead, and stands in
+for the whole path rather than for one segment of it:
+
+```sh
+ecl org id --create ~/org/runfile.org Projects "Ship v2"
+# 6b1f0a94-...
+
+ecl org rename  --id 6b1f0a94-... ~/org/runfile.org "Ship v3"
+ecl org section --id 6b1f0a94-... ~/org/runfile.org   # same heading
+```
+
+Every heading command takes it, reads and edits alike, and `refile` also
+takes `--to-id` for its destination. Flags come before the file, so the
+etag hints print `--id` where they used to print segments and stay
+copy-pasteable.
+
+`ecl org id` is where an ID comes from, and only `--create` writes one, so
+a file grows IDs where someone asked for them and nowhere else. The lookup
+is exact and stays inside the file you named: no case folding, no link
+display text, and no `org-id` location database to go stale or to answer
+out of a file nobody mentioned.
+
+An ID names a heading that already exists, so `create --id` only ever
+updates, and `--parents` next to it is refused rather than ignored. Two
+headings carrying one ID is an error naming the ID, not a coin toss. A
+heading tagged `:noai:` stays out of reach either way — an ID is a second
+door to the same heading, not a way around the tag.
 
 ## Where a new heading lands
 

@@ -913,6 +913,162 @@ different thing and invites a retry."
     (ecl-org-append-section f '("Notes") "\nFrom the agent.\n")
     (should (string-search "From the agent." (ecl-org-test--file-string f)))))
 
+;;; --id addressing
+
+(defvar ecl-org-test--id-fixture
+  "#+TODO: TODO(t!) WAITING(w@) | DONE(d!)
+
+* Projects
+** Ship v2
+:PROPERTIES:
+:ID: ship-v2-id
+:END:
+Body line one.
+*** QA
+QA body.
+* Notes
+Loose note.
+* Twins
+** One
+:PROPERTIES:
+:ID: shared-id
+:END:
+First body.
+** Two
+:PROPERTIES:
+:ID: shared-id
+:END:
+Second body.
+* Hidden :noai:
+:PROPERTIES:
+:ID: hidden-id
+:END:
+Sensitive body.
+")
+
+(defmacro ecl-org-test--with-id-file (var &rest body)
+  "Bind VAR to a temp org file with the ID fixture around BODY."
+  (declare (indent 1))
+  `(ecl-org-test--with-content ,var ecl-org-test--id-fixture ,@body))
+
+(ert-deftest ecl-org-test-args-address-replaces-the-segments ()
+  (should (equal (ecl-org--args '("--id" "x" "f") '(("--id" . address)) 0 "u")
+                 '((("--id" . "x")) "f" (id . "x"))))
+  (should (equal (ecl-org--args '("--id" "x" "f" "N") '(("--id" . address)) 1 "u")
+                 '((("--id" . "x")) "f" (id . "x") "N"))))
+
+(ert-deftest ecl-org-test-args-address-and-segments-are-exclusive ()
+  "The address stands in for the path; giving both leaves the run ambiguous."
+  (let ((err (should-error (ecl-org--args '("--id" "x" "f" "a")
+                                          '(("--id" . address)) 0 "usage-here"))))
+    (should (string-search "not both" (cadr err)))
+    (should (string-search "usage-here" (cadr err))))
+  (should-error (ecl-org--args '("f") '(("--id" . address)) 0 "u")))
+
+(ert-deftest ecl-org-test-id-reads-the-same-section-as-the-path ()
+  (ecl-org-test--with-id-file f
+    (should (equal (ecl-org-section f '(id . "ship-v2-id"))
+                   (ecl-org-section f '("Projects" "Ship v2"))))
+    (should (string-search "QA body." (ecl-org-section f '(id . "ship-v2-id") t)))))
+
+(ert-deftest ecl-org-test-id-survives-a-rename ()
+  "The point of the flag: a title is what a human edits, an ID is not."
+  (ecl-org-test--with-id-file f
+    (ecl-org-rename f '(id . "ship-v2-id") "Ship v3")
+    (should-error (ecl-org-section f '("Projects" "Ship v2")))
+    (should (string-search "Body line one."
+                           (ecl-org-section f '(id . "ship-v2-id"))))))
+
+(ert-deftest ecl-org-test-id-survives-a-refile ()
+  (ecl-org-test--with-id-file f
+    (ecl-org-refile f '(id . "ship-v2-id") nil '("Notes")
+                    (ecl-org-test--etag f '(id . "ship-v2-id") t))
+    (should (string-search "Body line one."
+                           (ecl-org-section f '(id . "ship-v2-id"))))
+    (should (string-search "Body line one."
+                           (ecl-org-section f '("Notes" "Ship v2"))))))
+
+(ert-deftest ecl-org-test-id-writes-reach-the-file ()
+  (ecl-org-test--with-id-file f
+    (ecl-org-append-section f '(id . "ship-v2-id") "\nAppended.\n")
+    (ecl-org-set-property f '(id . "ship-v2-id") "Owner" "alice")
+    (let ((on-disk (ecl-org-test--file-string f)))
+      (should (string-search "Appended." on-disk))
+      (should (string-match-p "^:Owner: +alice$" on-disk)))))
+
+(ert-deftest ecl-org-test-id-that-is-not-there ()
+  (ecl-org-test--with-id-file f
+    (let ((err (should-error (ecl-org-section f '(id . "no-such-id")))))
+      (should (string-search "No heading with ID no-such-id" (cadr err))))))
+
+(ert-deftest ecl-org-test-id-duplicates-are-an-error-not-a-coin-toss ()
+  (ecl-org-test--with-id-file f
+    (let ((err (should-error (ecl-org-section f '(id . "shared-id")))))
+      (should (string-search "Several headings carry ID" (cadr err))))))
+
+(ert-deftest ecl-org-test-id-does-not-reach-a-private-heading ()
+  "An ID is a second door to the same heading, not a way around the tag."
+  (ecl-org-test--with-id-file f
+    (let ((err (should-error (ecl-org-section f '(id . "hidden-id")))))
+      (should (string-search "tagged noai" (cadr err))))
+    (should-error (ecl-org-heading-id f '("Hidden")))))
+
+(ert-deftest ecl-org-test-id-is-matched-exactly ()
+  "Path segments fold case and see past links; an opaque token does neither."
+  (ecl-org-test--with-id-file f
+    (should-error (ecl-org-section f '(id . "SHIP-V2-ID")))))
+
+(ert-deftest ecl-org-test-id-etag-hint-round-trips ()
+  "The hint has to be a call that runs: flags come before FILE."
+  (ecl-org-test--with-id-file f
+    (let ((hint (ecl-org--section-hint f '(id . "ship-v2-id") "subtree")))
+      (should (string-search "--id ship-v2-id" hint))
+      (should (string-match-p "--id ship-v2-id .*\\.org\\'" hint)))
+    (let ((err (should-error (ecl-org-delete f '(id . "ship-v2-id")))))
+      (should (string-search "--id ship-v2-id" (cadr err))))
+    (ecl-org-delete f '(id . "ship-v2-id")
+                    (ecl-org-test--etag f '(id . "ship-v2-id") t))
+    (should-error (ecl-org-section f '(id . "ship-v2-id")))))
+
+(ert-deftest ecl-org-test-id-create-only-ever-updates ()
+  (ecl-org-test--with-id-file f
+    (should (equal (ecl-org-create f '(id . "ship-v2-id") "TODO" nil nil nil
+                                   nil nil "")
+                   "updated Projects > Ship v2"))
+    (should (string-search "** TODO Ship v2" (ecl-org-test--file-string f)))
+    (should-error (ecl-org-create f '(id . "no-such-id") nil nil nil nil
+                                  nil nil "body"))
+    (let ((err (should-error (ecl-org-create f '(id . "ship-v2-id") nil nil nil nil
+                                             t nil "body"))))
+      (should (string-search "--parents" (cadr err))))))
+
+(ert-deftest ecl-org-test-id-create-still-wants-an-etag ()
+  (ecl-org-test--with-id-file f
+    (should-error (ecl-org-create f '(id . "ship-v2-id") nil nil nil nil
+                                  nil nil "rewritten"))
+    (ecl-org-create f '(id . "ship-v2-id") nil nil nil nil nil nil "rewritten"
+                    (ecl-org-test--etag f '(id . "ship-v2-id")))
+    (should (string-search "rewritten" (ecl-org-section f '(id . "ship-v2-id"))))))
+
+(ert-deftest ecl-org-test-refile-to-id-names-the-destination ()
+  (ecl-org-test--with-id-file f
+    (should (equal (ecl-org-refile f '("Notes") nil '(id . "ship-v2-id")
+                                   (ecl-org-test--etag f '("Notes") t))
+                   "refiled Notes -> Projects > Ship v2"))
+    (should (string-search "Loose note."
+                           (ecl-org-section f '("Projects" "Ship v2" "Notes"))))))
+
+(ert-deftest ecl-org-test-id-command-reads-and-mints ()
+  (ecl-org-test--with-id-file f
+    (should (equal (ecl-org-heading-id f '("Projects" "Ship v2")) "ship-v2-id"))
+    (let ((err (should-error (ecl-org-heading-id f '("Notes")))))
+      (should (string-search "ecl org id --create" (cadr err))))
+    (let ((minted (ecl-org-heading-id f '("Notes") t)))
+      (should (stringp minted))
+      (should (string-search minted (ecl-org-test--file-string f)))
+      (should (equal (ecl-org-section f (cons 'id minted))
+                     (ecl-org-section f '("Notes")))))))
+
 ;;; reload
 
 (ert-deftest ecl-org-test-reload-rebuilds-the-command-table ()
