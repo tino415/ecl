@@ -291,6 +291,18 @@ out=$(run org section --subtree --id "$ID" "$I")
 echo "$out" | grep -q '^\*\*\* Notes' \
   && ok "--to-id moved it under the ID" || bad "refile --to-id: $out"
 
+# Across files: the ID is looked up in the destination, not the source.
+J="$WORK/id-dest.org"
+printf '* Inbox\n:PROPERTIES:\n:ID: inbox-id\n:END:\nInbox body.\n' > "$J"
+run org refile --to-file "$J" --to-id inbox-id \
+  --if-match "$(etag_sub "$I" Projects "Ship v3")" "$I" Projects "Ship v3" >/dev/null
+expect_exit "refile --to-id --to-file" 0 $?
+grep -q '^\*\* Ship v3' "$J" \
+  && ok "--to-id resolved in the destination file" || bad "cross-file: $(cat "$J")"
+
+run org status --id "$ID" "$J" DONE >/dev/null
+expect_exit "status by --id, in the file it moved to" 0 $?
+
 # --- etags: the read-then-write loop ---
 E="$WORK/etag.org"
 printf '* Notes\nbase line\n' > "$E"

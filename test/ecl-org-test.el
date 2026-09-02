@@ -1016,7 +1016,8 @@ Sensitive body.
 (ert-deftest ecl-org-test-id-is-matched-exactly ()
   "Path segments fold case and see past links; an opaque token does neither."
   (ecl-org-test--with-id-file f
-    (should-error (ecl-org-section f '(id . "SHIP-V2-ID")))))
+    (let ((err (should-error (ecl-org-section f '(id . "SHIP-V2-ID")))))
+      (should (string-search "No heading with ID SHIP-V2-ID" (cadr err))))))
 
 (ert-deftest ecl-org-test-id-etag-hint-round-trips ()
   "The hint has to be a call that runs: flags come before FILE."
@@ -1057,6 +1058,59 @@ Sensitive body.
                    "refiled Notes -> Projects > Ship v2"))
     (should (string-search "Loose note."
                            (ecl-org-section f '("Projects" "Ship v2" "Notes"))))))
+
+(ert-deftest ecl-org-test-id-carries-through-status-and-its-logging ()
+  "`set-status' resolves twice: once to move the keyword, once to log under it."
+  (ecl-org-test--with-id-file f
+    (should (equal (ecl-org-set-status f '(id . "ship-v2-id") "DONE") "DONE"))
+    (should (string-search "State \"DONE\""
+                           (ecl-org-section f '(id . "ship-v2-id"))))
+    (should (equal (ecl-org-set-status f '(id . "ship-v2-id") "WAITING" "blocked")
+                   "WAITING"))
+    (should (string-search "blocked" (ecl-org-section f '(id . "ship-v2-id"))))))
+
+(ert-deftest ecl-org-test-id-scopes-a-tangle ()
+  (ecl-org-test--with-id-file f
+    (with-current-buffer (find-file-noselect f)
+      (goto-char (point-max))
+      (insert "* Blocks\n:PROPERTIES:\n:ID: blocks-id\n:END:\n"
+              "#+name: hello\n#+begin_src text :tangle "
+              (file-name-nondirectory f) ".out\nhi\n#+end_src\n")
+      (save-buffer))
+    (let ((out (concat f ".out")))
+      (unwind-protect
+          (progn
+            (should (ecl-org-tangle f nil '(id . "blocks-id")))
+            (should (file-exists-p out))
+            (should-error (ecl-org-tangle f "hello" '(id . "blocks-id"))))
+        (when (file-exists-p out) (delete-file out))))))
+
+(ert-deftest ecl-org-test-id-carries-through-attach ()
+  (ecl-org-test--with-id-file f
+    (let ((org-attach-id-dir (make-temp-file "ecl-org-test-attach-" t))
+          (src (make-temp-file "ecl-org-test-source-" nil ".txt" "payload")))
+      (unwind-protect
+          (progn
+            (should (ecl-org-attach f '(id . "ship-v2-id") src))
+            (should (equal (ecl-org-attachments f '(id . "ship-v2-id"))
+                           (list (file-name-nondirectory src))))
+            (should (ecl-org-attach-dir f '(id . "ship-v2-id")))
+            (should (equal (ecl-org-attach-dir f '(id . "ship-v2-id"))
+                           (ecl-org-attach-dir f '("Projects" "Ship v2")))))
+        (delete-file src)
+        (delete-directory org-attach-id-dir t)))))
+
+(ert-deftest ecl-org-test-refile-to-id-looks-in-the-destination-file ()
+  "The ID is ambiguous in the source file and single in the destination.
+Resolving it anywhere but the destination would error instead of moving."
+  (ecl-org-test--with-id-file f
+    (ecl-org-test--with-content g
+        "* Inbox\n:PROPERTIES:\n:ID: shared-id\n:END:\nInbox body.\n"
+      (should (equal (ecl-org-refile f '("Notes") g '(id . "shared-id")
+                                     (ecl-org-test--etag f '("Notes") t))
+                     (format "refiled Notes -> Inbox in %s" g)))
+      (should (string-search "** Notes" (ecl-org-test--file-string g)))
+      (should-not (string-search "Loose note." (ecl-org-test--file-string f))))))
 
 (ert-deftest ecl-org-test-id-command-reads-and-mints ()
   (ecl-org-test--with-id-file f
