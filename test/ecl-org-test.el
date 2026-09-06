@@ -591,6 +591,33 @@ echo hi
     (should-not (ecl-org-set-property f '("Notes") "Owner" ""))
     (should-not (ecl-org-get-property f '("Notes") "Owner"))))
 
+(ert-deftest ecl-org-test-property-reports-own-value-beside-accumulation ()
+  "Setting beside :NAME+: lines reports what was written, not the sum of them."
+  (ecl-org-test--with-content f
+      "* One\n:PROPERTIES:\n:Owner+: bob\n:Owner+: carol\n:END:\nbody\n"
+    (should (equal (ecl-org-set-property f '("One") "Owner" "alice") "alice"))
+    ;; Org's own reading still accumulates, and the + lines stay put.
+    (should (equal (ecl-org-get-property f '("One") "Owner") "alice bob carol"))
+    (let ((s (ecl-org-test--file-string f)))
+      (should (string-search ":Owner+: bob" s))
+      (should (string-search ":Owner+: carol" s)))))
+
+(ert-deftest ecl-org-test-property-name-refused-at-the-edges ()
+  "A colon-edged NAME is refused; an interior colon is a real property."
+  (ecl-org-test--with-content f "* One\nbody\n"
+    (let ((before (ecl-org-test--file-string f)))
+      (should-error (ecl-org-set-property f '("One") ":var" "srcdir=\"/tmp\""))
+      (should-error (ecl-org-set-property f '("One") "Owner:" "bob"))
+      (should-error (ecl-org-set-property f '("One") "" "bob"))
+      (should (equal (ecl-org-test--file-string f) before)))
+    (should (equal (ecl-org-set-property f '("One") "header-args:shell" ":var a=1")
+                   ":var a=1"))))
+
+(ert-deftest ecl-org-test-create-property-name-refused-at-the-edges ()
+  (ecl-org-test--with-file f
+    (should-error (ecl-org-create f '("Notes") nil nil nil '(":var=x") nil nil ""))
+    (should-not (string-search "::var:" (ecl-org-test--file-string f)))))
+
 ;;; outline / keywords / filetags
 
 (ert-deftest ecl-org-test-outline ()

@@ -370,6 +370,16 @@ expect_exit "bad path exits 2" 2 $?
 echo "$out" | grep -q "taken as NAME VALUE" \
   && ok "miscount hint printed" || bad "miscount hint: $out"
 
+# An unquoted VALUE is the same miscount one argument further along: `:var'
+# lands as NAME, where Org would write it as a malformed `::var:' line.
+out=$(run org property "$F" Projects "Rate limiting" :var 'srcdir="/tmp"' 2>&1)
+expect_exit "colon-edged NAME exits 2" 2 $?
+echo "$out" | grep -q "Invalid property name" \
+  && ok "name guard printed" || bad "name guard: $out"
+out=$(run org section "$F" Projects "Rate limiting")
+echo "$out" | grep -q "::var:" \
+  && bad "malformed drawer line written" || ok "drawer untouched"
+
 # --- the file moves underneath the daemon ---
 # The regression that matters: `find-file-noselect' and `basic-save-buffer'
 # both ask about a file that changed on disk, and a single-threaded daemon

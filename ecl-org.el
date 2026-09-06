@@ -931,11 +931,36 @@ nearest ancestor's Effort when the heading has none.  Pure query."
      (goto-char (ecl-org--find-olp target))
      (org-entry-get (point) org-effort-property inherit))))
 
+(defun ecl-org--property-name (name &optional hint)
+  "NAME, refused when Org would write it as a malformed drawer line.
+Org only rejects an empty name or one holding whitespace, so `:var'
+gets through and lands as `::var:'.  An interior colon is legal --
+`header-args:shell' is a real property -- so only the edges are refused.
+HINT names the likely cause for the caller's grammar."
+  (if (or (string-empty-p name)
+          (string-match-p "\\`:\\|:\\'\\|\\s-" name))
+      (error "Invalid property name %S%s" name (or hint ""))
+    name))
+
+(defun ecl-org--own-property-value (name)
+  "Value on this heading's own :NAME: line, or nil.
+`org-entry-get' would answer with that line joined to every :NAME+:
+line, which is what Org reads but not what a caller just wrote; the
+`+' variant needs its own suffix in the pattern, so this misses it."
+  (when-let ((range (org-get-property-block)))
+    (save-excursion
+      (goto-char (car range))
+      (and (re-search-forward (org-re-property name nil t) (cdr range) t)
+           (match-string-no-properties 3)))))
+
 (defun ecl-org-set-property (file target name value)
   "Set property NAME of the heading at TARGET in FILE to VALUE; save.
-NAME is a property name such as \"Owner\" or \"URL\" (no colons); an
-empty VALUE removes the property.  Returns the new value, or nil when
-cleared."
+NAME is a property name such as \"Owner\" or \"URL\" (no colon at either
+end); an empty VALUE removes the property.  Returns the heading's own new
+value, or nil when cleared -- :NAME+: lines beside it are left alone and
+stay out of the answer."
+  (ecl-org--property-name
+   name "; a VALUE holding spaces has to be quoted as one argument")
   (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (goto-char (ecl-org--find-olp
@@ -946,7 +971,7 @@ cleared."
            (org-entry-delete (point) name)
          (org-entry-put (point) name value)))
      (ecl-org--save)
-     (org-entry-get (point) name))))
+     (ecl-org--own-property-value name))))
 
 (defun ecl-org-get-property (file target name &optional inherit)
   "Return property NAME of the heading at TARGET in FILE, or nil.
@@ -1117,7 +1142,7 @@ that does not exist is an error rather than a silent no-op."
            (dolist (kv properties)
              (let* ((eq-pos (or (string-search "=" kv)
                                 (error "--property needs K=V, got %S" kv)))
-                    (name (substring kv 0 eq-pos))
+                    (name (ecl-org--property-name (substring kv 0 eq-pos)))
                     (value (substring kv (1+ eq-pos))))
                (if (string-empty-p value)
                    (org-entry-delete (point) name)

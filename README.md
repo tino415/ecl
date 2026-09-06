@@ -167,6 +167,32 @@ of the subtree". Org's one lever is first-child vs last-child (`:prepend`,
 `org-reverse-note-order`), which is a different axis. `C-c C-w` and `C-c c`
 already do this to you, so nothing here special-cases it.
 
+## What `property` sets and what it answers with
+
+`property` writes one heading's own `:NAME:` line and reports that line
+back. Org's reading of a property is wider: a drawer may accumulate, and
+`:NAME+:` lines join the base value when anything asks for it. So on
+
+```org
+*** Provisioning (execute once)
+:PROPERTIES:
+:header-args+: :var binary="payout_id"
+:END:
+```
+
+`ecl org property F H header-args ':var srcdir="/tmp"'` answers `:var
+srcdir="/tmp"` while `property-get` answers `:var srcdir="/tmp" :var
+binary="payout_id"`. The `+` lines are left where they are — accumulation
+is a decision about the heading, not something a scalar set should quietly
+collapse. Clearing with an empty VALUE is Org's `org-entry-delete`, which
+does take the `+` lines with it.
+
+A NAME may not start or end with a colon. Org itself only refuses an empty
+name or one holding whitespace, so `:var` would reach the drawer and land
+as a malformed `::var:` line — which is what an unquoted VALUE produces,
+`:var` being peeled off as NAME. An interior colon is fine:
+`header-args:shell` is a real Org property.
+
 ## Questions nobody can answer
 
 Emacs is single-threaded. A command that reaches `y-or-n-p` with only a
