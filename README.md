@@ -316,6 +316,13 @@ client immediately; the client polls `ecl-poll` until the UI calls
 Emacs stays usable — including for the review itself — while a request
 waits, and no review buffer outlives its caller.
 
+Not every wait is on a human: a command that waits on a timer or a
+process passes `ecl-pending-start` a second argument naming what it
+waits for, which travels as `(ecl-pending ID WAITING-FOR)` and becomes
+the client's `ecl: waiting for ...` line. Without one the client says
+`waiting for approval in Emacs`, so the caller knows to go look for a
+buffer only when there is one.
+
 ## Running a shell command
 
 ```sh

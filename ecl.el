@@ -59,6 +59,9 @@
 ;; `ecl-poll' until the UI calls `ecl-pending-resolve', and sends
 ;; `ecl-cancel' if it dies first.  The daemon stays responsive while a
 ;; request waits.  See ecl-eval.el for the approval-buffer example.
+;; A wait that is not on a human -- a timer, a process -- passes a
+;; WAITING-FOR label the client says instead, so the caller is not sent
+;; looking for a buffer to approve.
 
 ;;; Code:
 
@@ -184,12 +187,16 @@ undecided) and :cancel (a thunk tearing the UI down).")
   "Source of pending request ids.
 A counter, not `random', so tests observe stable ids.")
 
-(defun ecl-pending-start (setup)
-  "Register a request awaiting a human decision and return its marker.
+(defun ecl-pending-start (setup &optional waiting-for)
+  "Register a request awaiting a decision and return its marker.
 SETUP is called with the new id and should put the UI up and return a
 thunk that tears it down again (used by `ecl-cancel' when the client
-goes away).  Returns (ecl-pending ID), which `ecl--run' passes through
-to the client unwrapped; the UI later calls `ecl-pending-resolve'."
+goes away).  WAITING-FOR names what the wait is on, as a noun phrase
+the client prints (\"the screen to settle\"); omit it when a human is
+being asked to approve something and the client says so itself.
+Returns (ecl-pending ID) -- or (ecl-pending ID WAITING-FOR) -- which
+`ecl--run' passes through to the client unwrapped; the UI later calls
+`ecl-pending-resolve'."
   (let ((id (number-to-string (setq ecl--pending-counter
                                     (1+ ecl--pending-counter)))))
     (puthash id (list :result nil :cancel #'ignore) ecl--pending)
@@ -199,7 +206,9 @@ to the client unwrapped; the UI later calls `ecl-pending-resolve'."
                             :cancel (if (functionp cancel) cancel #'ignore))
                    ecl--pending))
       (error (remhash id ecl--pending) (signal (car err) (cdr err))))
-    (list 'ecl-pending id)))
+    (if waiting-for
+        (list 'ecl-pending id waiting-for)
+      (list 'ecl-pending id))))
 
 (defun ecl-pending-resolve (id result)
   "Hand RESULT to the client waiting on ID.
@@ -304,9 +313,9 @@ ignored."
 STDIN is input piped to the client (nil when none), DIRECTORY its cwd;
 both are exposed to commands as `ecl-stdin' and `ecl-directory'.
 Never signals; returns (ecl-ok VALUE), (ecl-help TEXT),
-\(ecl-error KIND MESSAGE), (ecl-need-stdin) or (ecl-pending ID) -- the
-last two ask the client to re-dispatch with stdin, respectively to poll
-`ecl-poll' until a human decides."
+\(ecl-error KIND MESSAGE), (ecl-need-stdin) or (ecl-pending ID
+[WAITING-FOR]) -- the last two ask the client to re-dispatch with
+stdin, respectively to poll `ecl-poll' until the request is decided."
   (let ((ecl-stdin stdin)
         (ecl-directory directory))
     (condition-case err

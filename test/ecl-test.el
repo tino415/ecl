@@ -206,6 +206,23 @@
        (should (equal (ecl-poll id) nil)))
       (other (ert-fail (format "unexpected: %S" other))))))
 
+(ert-deftest ecl-test-pending-two-element-marker-without-a-label ()
+  "The marker keeps its old shape when nothing is named, so a client
+reading (cadr) for the id and (nth 2) for the label sees no label."
+  (let ((ecl--pending (make-hash-table :test 'equal)))
+    (should (equal (length (ecl-pending-start (lambda (_id) #'ignore))) 2))))
+
+(ert-deftest ecl-test-pending-marker-carries-waiting-for ()
+  "A wait that is not on a human names what it is on, for the client to say."
+  (let ((ecl--pending (make-hash-table :test 'equal)))
+    (pcase (ecl-pending-start (lambda (_id) #'ignore) "the screen to settle")
+      (`(ecl-pending ,id ,waiting-for)
+       (should (equal waiting-for "the screen to settle"))
+       ;; The label is the client's business; the request is the usual one.
+       (ecl-pending-resolve id '(ecl-ok "settled"))
+       (should (equal (ecl-poll id) '(ecl-ok "settled"))))
+      (other (ert-fail (format "unexpected: %S" other))))))
+
 (ert-deftest ecl-test-pending-setup-failure-leaves-no-entry ()
   "A UI that fails to come up must not strand a request in the table."
   (let ((ecl--pending (make-hash-table :test 'equal)))

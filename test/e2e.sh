@@ -476,6 +476,17 @@ grep -q 'logged' "$WORK/ok.out" \
 grep -q 'waiting for approval' "$WORK/ok.err" \
   && ok "eval announces the wait on stderr" || bad "eval wait notice missing"
 
+# A wait on a timer rather than on a human says so, instead of sending
+# the caller looking for a buffer to approve.
+run settle > "$WORK/settle.out" 2>"$WORK/settle.err"
+expect_exit "a labeled pending request exits 0" 0 $?
+grep -q 'settled' "$WORK/settle.out" \
+  && ok "the timer's result reaches the caller" || bad "settle: $(cat "$WORK/settle.out")"
+grep -q 'waiting for the screen to settle' "$WORK/settle.err" \
+  && ok "the wait is announced by its label" || bad "settle notice: $(cat "$WORK/settle.err")"
+grep -q 'approval' "$WORK/settle.err" \
+  && bad "labeled wait still mentions approval" || ok "no approval wording when nobody was asked"
+
 printf '(+ 1 2)' | run eval > "$WORK/edit.out" 2>&1 &
 pid=$!
 decide '(erase-buffer) (insert "(* 6 7)") (ecl-eval-approve)'

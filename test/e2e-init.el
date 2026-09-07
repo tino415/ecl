@@ -11,6 +11,18 @@
 (ecl-register `("version" . ,(lambda ()
                                "Emacs version of the running daemon."
                                (emacs-version))))
+(ecl-register
+ `("settle" . ,(lambda ()
+                 "Wait on a timer -- a pending request with nobody to ask."
+                 (ecl-pending-start
+                  (lambda (id)
+                    (let ((timer (run-with-timer
+                                  0.3 nil
+                                  (lambda ()
+                                    (ecl-pending-resolve
+                                     id (list 'ecl-ok "settled"))))))
+                      (lambda () (cancel-timer timer))))
+                  "the screen to settle"))))
 (ecl-register ecl-org-command-group)
 (ecl-register ecl-eval-command)
 (ecl-register ecl-browse-command)
