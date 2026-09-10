@@ -26,8 +26,10 @@ instead of raw `emacsclient --eval`.
   its own commands. Babel blocks are the
   exception: `blocks|block|set-block|run|tangle --block` address a
   `#+name:`, so one block can be rewritten without touching the prose
-  around it. A heading tagged `:noai:` is out of reach, and a command
-  that replaces a whole region wants an etag of it — both below.
+  around it. `run` takes a named `#+call:` line too — the body commands
+  do not, a call line having no body of its own. A heading tagged
+  `:noai:` is out of reach, and a command that replaces a whole region
+  wants an etag of it — both below.
 
 ## Wiring
 

@@ -413,6 +413,82 @@ echo hi
                          (ecl-org-test--block-etag f "greet"))
       (should (equal before (ecl-org-test--file-string f))))))
 
+;;; run
+
+(defvar ecl-org-test--run-fixture
+  "* Library
+#+name: greet
+#+begin_src emacs-lisp :var who=\"world\"
+(concat \"hi \" who)
+#+end_src
+
+* Call site
+:PROPERTIES:
+:header-args: :var who=\"drawer\"
+:END:
+
+#+name: greet-call
+#+call: greet()
+
+#+name: dangling-call
+#+call: nosuch()
+")
+
+(ert-deftest ecl-org-test-run-executes-a-named-src-block ()
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (should (equal (ecl-org-run f "greet") "hi world"))
+    (should (string-search "#+RESULTS: greet\n: hi world"
+                           (ecl-org-test--file-string f)))))
+
+(ert-deftest ecl-org-test-run-executes-a-named-call-line ()
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (should (equal (ecl-org-run f "greet-call") "hi drawer"))
+    (should (string-search "#+RESULTS: greet-call\n: hi drawer"
+                           (ecl-org-test--file-string f)))))
+
+(ert-deftest ecl-org-test-run-call-line-takes-the-call-site-header-args ()
+  "The reason a call line has to be runnable at all: it is not the block."
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (should (equal (ecl-org-run f "greet") "hi world"))
+    (should (equal (ecl-org-run f "greet-call") "hi drawer"))))
+
+(ert-deftest ecl-org-test-run-unknown-name-errors ()
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (let ((err (should-error (ecl-org-run f "nope"))))
+      (should (string-search "ecl org blocks" (cadr err))))))
+
+(ert-deftest ecl-org-test-run-call-line-to-a-missing-block-errors ()
+  "Nil info would send `org-babel-execute-src-block' at whatever is at point."
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (let ((err (should-error (ecl-org-run f "dangling-call"))))
+      (should (string-search "nosuch" (cadr err))))))
+
+(ert-deftest ecl-org-test-body-commands-name-a-call-line ()
+  "`ecl org blocks' lists it, so denying it exists is the wrong answer."
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (dolist (err (list (should-error (ecl-org-block f "greet-call"))
+                       (should-error (ecl-org-set-block f "greet-call" "x\n"))
+                       (should-error (ecl-org-tangle f "greet-call"))))
+      (should (string-search "#+call:" (cadr err)))
+      (should (string-search "ecl org run" (cadr err))))))
+
+(ert-deftest ecl-org-test-run-refuses-a-call-into-a-private-block ()
+  "A public call line is otherwise a second door into a :noai: subtree."
+  (ecl-org-test--with-content f "* Open
+#+name: vault-call
+#+call: vault-block()
+
+* Vault :noai:
+#+name: vault-block
+#+begin_src emacs-lisp
+\"secret payload\"
+#+end_src
+"
+    (let ((err (should-error (ecl-org-run f "vault-call"))))
+      (should (string-search "vault-block" (cadr err)))
+      (should (string-search "noai" (cadr err))))
+    (should-not (string-search "RESULTS" (ecl-org-test--file-string f)))))
+
 ;;; create
 
 (ert-deftest ecl-org-test-create-new-leaf-with-metadata ()

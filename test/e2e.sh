@@ -90,6 +90,18 @@ echo hi
 #+end_src
 
 Prose after the block.
+* Sums
+:PROPERTIES:
+:header-args: :var n=4
+:END:
+
+#+name: sum
+#+begin_src emacs-lisp :var n=1
+(* n 10)
+#+end_src
+
+#+name: sum-call
+#+call: sum()
 EOF
 
 # --- plumbing ---
@@ -217,6 +229,18 @@ echo "$out" | grep -q ':results output' \
 
 run org block "$F" nosuchblock >/dev/null 2>&1
 expect_exit "unknown block exits 2" 2 $?
+
+out=$(run org run "$F" sum)
+expect_exit "run exits 0" 0 $?
+[ "$out" = "10" ] && ok "run executes a src block" || bad "run: $out"
+
+# The call line sees the heading's :header-args:, the block its own :var.
+out=$(run org run "$F" sum-call)
+expect_exit "run on a #+call: line exits 0" 0 $?
+[ "$out" = "40" ] && ok "run executes a #+call: line" || bad "run call: $out"
+
+run org block "$F" sum-call >/dev/null 2>&1
+expect_exit "block on a #+call: line exits 2" 2 $?
 
 # --- status --note: the daemon-only logging path ---
 run org status --note "blocked on infra" "$F" Projects "Rate limiting" WAITING >/dev/null

@@ -32,6 +32,13 @@
 ;; retitled -- and so one block can be rewritten without touching the
 ;; prose around it.
 ;;
+;; A name may hold a #+call: line rather than a src block, and run takes
+;; both.  The two are not the same execution: a call line carries the
+;; vars and header args of where it sits, so a block written against a
+;; heading's :header-args: drawer has to be reached through one.  The
+;; body commands -- block, set-block, tangle --block -- want a src
+;; block, a call line having no body of its own.
+;;
 ;; The four commands that replace a whole region blind -- create with a
 ;; body, set-block, delete, refile -- take an etag of that region via
 ;; --if-match, from a read made with --with-etag.  Nothing else needs
@@ -52,6 +59,7 @@
 
 (require 'org)
 (require 'org-element)
+(require 'ob-lob)
 (require 'org-attach)
 (require 'org-refile)
 (require 'org-src)
@@ -527,6 +535,34 @@ CONTENT should include its own leading newline.  Saves via `ecl-org--save'."
     (ecl-org--save))
   nil)
 
+(defun ecl-org-run (file name)
+  "Execute the babel src block or #+call: line named NAME in FILE.
+Return the result as a string.  Inserts #+RESULTS: in the buffer and
+saves.  Bypasses `org-confirm-babel-evaluate'.
+
+A #+call: line is executed where it sits rather than at the block it
+names, which is the point of one: it carries the vars and header args of
+its own call site, so a block written against a heading's :header-args:
+drawer produces something else when run directly."
+  (with-current-buffer (ecl-org--buffer file)
+    (org-with-wide-buffer
+     (let* ((org-confirm-babel-evaluate nil)
+            (result (ecl-org--execute-named name file)))
+       (ecl-org--save)
+       (format "%s" (or result ""))))))
+
+(defun ecl-org--execute-named (name file)
+  "Execute what NAME addresses in the current buffer -- a src block or a call.
+FILE names the file in the error messages."
+  (if-let ((call (ecl-org--goto-call name file)))
+      (org-babel-execute-src-block
+       nil (or (org-babel-lob-get-info call)
+               (error "#+call: line '%s' names '%s', which is not a block in %s"
+                      name (org-element-property :call call) file))
+       nil 'babel-call)
+    (ecl-org--goto-block name file)
+    (org-babel-execute-src-block)))
+
 (defun ecl-org--goto-block (name file)
   "Move point to the babel src block named NAME (via #+name:) in FILE.
 FILE is only used in the error message; the block is looked up in the
@@ -537,22 +573,55 @@ land here, so this is where a block inside a private subtree is refused."
   (ecl-org--check-private-file file)
   (let ((pos (org-babel-find-named-block name)))
     (unless pos
-      (error "No src block named '%s' in %s (see: ecl org blocks)" name file))
+      (if (ecl-org--find-named-call name)
+          (error "'%s' is a #+call: line, not a src block; it has no body of \
+its own -- `ecl org run' executes it" name)
+        (error "No src block named '%s' in %s (see: ecl org blocks)" name file)))
     (goto-char pos)
     (ecl-org--check-private (format "block '%s'" name))
     pos))
 
-(defun ecl-org-run (file name)
-  "Execute the babel src block named NAME (via #+name:) in FILE.
-Return result as string. Inserts #+RESULTS: in buffer and saves.
-Bypasses `org-confirm-babel-evaluate'."
-  (with-current-buffer (ecl-org--buffer file)
-    (org-with-wide-buffer
-     (ecl-org--goto-block name file)
-     (let* ((org-confirm-babel-evaluate nil)
-            (result (org-babel-execute-src-block)))
-       (ecl-org--save)
-       (format "%s" (or result ""))))))
+(defun ecl-org--goto-call (name file)
+  "Move point to the #+call: line named NAME in FILE; return its element.
+Nil when NAME holds no call line -- a src block of that name, or nothing
+at all, is `ecl-org--goto-block''s answer to give."
+  (ecl-org--check-private-file file)
+  (when-let ((call (ecl-org--find-named-call name)))
+    (goto-char (org-element-property :post-affiliated call))
+    (ecl-org--check-private (format "call line '%s'" name))
+    (ecl-org--check-callee-private call name)
+    call))
+
+(defun ecl-org--find-named-call (name)
+  "The #+call: line named NAME in the current buffer, or nil.
+`org-babel-find-named-block' only sees src blocks, and Org hangs a
+#+name: on data of every kind, so this walks the name lines and keeps the
+one carrying a call."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((case-fold-search t)
+          (regexp (org-babel-named-data-regexp-for-name name))
+          found)
+      (while (and (not found) (re-search-forward regexp nil t))
+        (let ((el (org-element-at-point)))
+          (when (and (equal name (org-element-property :name el))
+                     (eq (org-element-type el) 'babel-call))
+            (setq found el))))
+      found)))
+
+(defun ecl-org--check-callee-private (call name)
+  "Signal when the block CALL names sits under a private tag; NAME names CALL.
+A call line under a public heading would otherwise be a second door into
+a subtree every other command refuses.  The guard is one hop into this
+file: a callee spelled `other.org:block' points where this file's tags say
+nothing, and a callee that is itself a call line is not followed."
+  (let ((callee (org-element-property :call call)))
+    (unless (string-search ":" callee)
+      (save-excursion
+        (when-let ((pos (org-babel-find-named-block callee)))
+          (goto-char pos)
+          (ecl-org--check-private
+           (format "the block '%s' that '%s' calls" callee name)))))))
 
 (defun ecl-org--block-body (el)
   "The body of src block EL, newline-terminated, as `ecl-org-block' hands it out."
@@ -698,10 +767,11 @@ Returns nil when the heading has no attachment directory."
   "List named babel src blocks and #+call: lines in FILE, in document order.
 Columns per row: NAME, LANG (\"call:CALLEE\" for a #+call: line), and the
 block's resolved :tangle target (or - when it is not tangled).  NAME is
-what `ecl org run' and `ecl org tangle --block' address; anonymous blocks
-are omitted since they cannot be named on the command line, and so are
-blocks under a heading tagged with one of `ecl-org-private-tags' -- the
-name and the tangle target say enough on their own."
+what `ecl org run' addresses, either kind of row, and what `ecl org
+tangle --block' addresses among the src blocks; anonymous blocks are
+omitted since they cannot be named on the command line, and so are blocks
+under a heading tagged with one of `ecl-org-private-tags' -- the name and
+the tangle target say enough on their own."
   (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (ecl-org--check-private-file file)
