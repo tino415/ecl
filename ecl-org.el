@@ -39,6 +39,12 @@
 ;; body commands -- block, set-block, tangle --block -- want a src
 ;; block, a call line having no body of its own.
 ;;
+;; Running one is gated by `ecl-org-run-policy' -- allow (the default),
+;; ask, or deny -- which a file overrides through the ECL_RUN property:
+;; on a heading it covers that subtree, as `#+PROPERTY: ECL_RUN ask' it
+;; covers the file, and the nearest one wins.  Under `ask' the block goes
+;; up in an Emacs buffer and the caller waits for a human.
+;;
 ;; The four commands that replace a whole region blind -- create with a
 ;; body, set-block, delete, refile -- take an etag of that region via
 ;; --if-match, from a read made with --with-etag.  Nothing else needs
@@ -535,15 +541,86 @@ CONTENT should include its own leading newline.  Saves via `ecl-org--save'."
     (ecl-org--save))
   nil)
 
+(defvar ecl-org-run-policy 'allow
+  "What `ecl org run' does with a block no file speaks for.
+`allow' runs it, `ask' puts it to a human in Emacs, `deny' refuses.  A
+file overrides this per block through `ecl-org-run-property', so the two
+compose: set this to `ask' or `deny' and mark the files worth trusting.")
+
+(defconst ecl-org-run-property "ECL_RUN"
+  "Org property naming the policy for the blocks it covers.
+Its value is allow, ask or deny.  Read with inheritance, so a heading's
+value covers its subtree and a `#+PROPERTY:' line covers the file, with
+the nearest one winning -- one heading in an asking file can say allow.")
+
 (defun ecl-org-run (file name)
   "Execute the babel src block or #+call: line named NAME in FILE.
 Return the result as a string.  Inserts #+RESULTS: in the buffer and
-saves.  Bypasses `org-confirm-babel-evaluate'.
+saves.  Bypasses `org-confirm-babel-evaluate' -- `ecl-org-run-policy'
+and `ecl-org-run-property' are the gate that replaces it.
+
+Under `ask' this returns a pending marker rather than a result: the
+block goes up in an Emacs buffer and the client waits for the human to
+approve or deny it.  Under `deny' it signals.
 
 A #+call: line is executed where it sits rather than at the block it
 names, which is the point of one: it carries the vars and header args of
 its own call site, so a block written against a heading's :header-args:
 drawer produces something else when run directly."
+  (pcase-let ((`(,policy . ,source) (ecl-org--run-policy file name)))
+    (pcase policy
+      ('allow (ecl-org--run-now file name))
+      ('ask (ecl-org--review-run file name))
+      ('deny (error "'%s' in %s may not run: %s says deny" name file source))
+      (_ (error "'%s' in %s may not run: %s says %s, which is not allow, \
+ask or deny" name file source policy)))))
+
+(defun ecl-org--run-policy (file name)
+  "The policy covering NAME in FILE, as a (POLICY . SOURCE) pair.
+SOURCE names the knob that decided, for the message that refuses.
+Resolving NAME first means a block that is missing, or one behind a
+private tag, is refused as such rather than put to a human.
+
+A call line answers for two places -- where it sits and the block it
+runs -- and the stricter of them wins, so a call line is not a way past
+the heading that says deny."
+  (with-current-buffer (ecl-org--buffer file)
+    (org-with-wide-buffer
+     (let ((call (ecl-org--goto-runnable name file)))
+       (ecl-org--stricter (ecl-org--policy-at-point)
+                          (and call (ecl-org--callee-policy call)))))))
+
+(defun ecl-org--policy-at-point (&optional what)
+  "The policy covering point, as a (POLICY . SOURCE) pair.
+WHAT names the place in SOURCE when it is not the block itself."
+  (if-let ((value (org-entry-get (point) ecl-org-run-property t)))
+      (cons (intern (downcase (string-trim value)))
+            (format "%s%s" ecl-org-run-property (or what "")))
+    (cons ecl-org-run-policy "`ecl-org-run-policy'")))
+
+(defun ecl-org--callee-policy (call)
+  "The policy covering the block CALL names, or nil when it is not here.
+A callee spelled `other.org:block' points where this file's properties
+say nothing, and is left to that file's own run."
+  (let ((callee (org-element-property :call call)))
+    (unless (string-search ":" callee)
+      (save-excursion
+        (when-let ((pos (org-babel-find-named-block callee)))
+          (goto-char pos)
+          (ecl-org--policy-at-point (format " on the block '%s' it calls"
+                                            callee)))))))
+
+(defun ecl-org--stricter (a b)
+  "The stricter of (POLICY . SOURCE) pairs A and B; A wins a tie.
+B may be nil.  An unrecognised policy outranks the rest, so a typo in
+the property fails closed instead of running."
+  (let ((rank (lambda (pair)
+                (or (cdr (assq (car pair) '((allow . 0) (ask . 1) (deny . 2))))
+                    3))))
+    (if (and b (> (funcall rank b) (funcall rank a))) b a)))
+
+(defun ecl-org--run-now (file name)
+  "Execute NAME in FILE, insert #+RESULTS:, save, and return the result."
   (with-current-buffer (ecl-org--buffer file)
     (org-with-wide-buffer
      (let* ((org-confirm-babel-evaluate nil)
@@ -554,14 +631,154 @@ drawer produces something else when run directly."
 (defun ecl-org--execute-named (name file)
   "Execute what NAME addresses in the current buffer -- a src block or a call.
 FILE names the file in the error messages."
-  (if-let ((call (ecl-org--goto-call name file)))
+  (if-let ((call (ecl-org--goto-runnable name file)))
       (org-babel-execute-src-block
        nil (or (org-babel-lob-get-info call)
                (error "#+call: line '%s' names '%s', which is not a block in %s"
                       name (org-element-property :call call) file))
        nil 'babel-call)
-    (ecl-org--goto-block name file)
     (org-babel-execute-src-block)))
+
+(defun ecl-org--goto-runnable (name file)
+  "Move point to what NAME addresses in FILE: a #+call: line or a src block.
+Returns the call element, nil for a src block.  Both doors check the
+private tags, so a name out of reach is refused before any policy reads
+a property at it."
+  (or (ecl-org--goto-call name file)
+      (progn (ecl-org--goto-block name file) nil)))
+
+;;; Approving a run
+;;
+;; `ask' answers the client with a pending marker and puts the block up
+;; in a buffer, the shape `ecl eval' and `ecl shell' use.  That buffer is
+;; read-only where those two are editable: what runs is the block in the
+;; org file, not this copy of it.  Editing the file before approving
+;; still counts -- approval resolves the name again.
+
+(defvar-local ecl-org-run--id nil
+  "Id of the pending ecl request this buffer decides.")
+
+(defvar-local ecl-org-run--decided nil
+  "Non-nil once this buffer has answered, so killing it stays quiet.")
+
+(defvar-local ecl-org-run--file nil
+  "File holding the block this buffer decides on.")
+
+(defvar-local ecl-org-run--name nil
+  "Name of the src block or #+call: line this buffer decides on.")
+
+(define-derived-mode ecl-org-run-mode org-mode "ecl-org-run"
+  "Review buffer for a block an ecl client asked this daemon to run.
+\\[ecl-org-run-approve] runs the block as the file has it at that
+moment, so an edit made there while this is up is what runs;
+\\[ecl-org-run-deny] denies with a reason.
+
+\\{ecl-org-run-mode-map}")
+
+;; Bound after the mode definition so re-loading this file re-applies them.
+(define-key ecl-org-run-mode-map (kbd "C-c C-c") #'ecl-org-run-approve)
+(define-key ecl-org-run-mode-map (kbd "C-c C-k") #'ecl-org-run-deny)
+
+(defun ecl-org--review-run (file name)
+  "Show what NAME in FILE would run and return the pending marker."
+  (let ((text (ecl-org--runnable-text file name)))
+    (ecl-pending-start
+     (lambda (id)
+       (let ((buffer (generate-new-buffer (format "*ecl org run %s*" id))))
+         (with-current-buffer buffer
+           (insert text)
+           (unless (bolp) (insert "\n"))
+           (ecl-org-run-mode)
+           (setq ecl-org-run--id id
+                 ecl-org-run--file file
+                 ecl-org-run--name name)
+           (setq header-line-format (ecl-org-run--header))
+           (set-buffer-modified-p nil)
+           (setq buffer-read-only t)
+           (goto-char (point-min))
+           (add-hook 'kill-buffer-hook #'ecl-org-run--killed nil t))
+         ;; Put it where a human can see it, without stealing their point.
+         (let ((frame (ecl--user-frame)))
+           (with-selected-frame frame
+             (raise-frame frame)
+             (display-buffer buffer '(display-buffer-pop-up-window))))
+         (lambda () (ecl-org-run--discard buffer)))))))
+
+(defun ecl-org--runnable-text (file name)
+  "The source NAME in FILE stands for, for a human to read before approving.
+A src block comes as it stands; a call line comes with the block it
+names, that being where the code is."
+  (with-current-buffer (ecl-org--buffer file)
+    (org-with-wide-buffer
+     (let ((call (ecl-org--goto-runnable name file)))
+       (concat (ecl-org--element-text (org-element-at-point))
+               (and call (ecl-org--callee-text call)))))))
+
+(defun ecl-org--callee-text (call)
+  "The src block CALL names, under a line saying so, or nil when not here."
+  (let ((callee (org-element-property :call call)))
+    (unless (string-search ":" callee)
+      (save-excursion
+        (when-let ((pos (org-babel-find-named-block callee)))
+          (goto-char pos)
+          (concat "\n\n# calls:\n"
+                  (ecl-org--element-text (org-element-at-point))))))))
+
+(defun ecl-org-run--header ()
+  (substitute-command-keys
+   (format " ecl org run %s: %s in %s   \\[ecl-org-run-approve] run   \
+\\[ecl-org-run-deny] deny"
+           ecl-org-run--id ecl-org-run--name
+           (abbreviate-file-name (ecl-org--file ecl-org-run--file)))))
+
+(defun ecl-org-run--killed ()
+  "Deny the pending request when its buffer goes away undecided."
+  (when (and ecl-org-run--id (not ecl-org-run--decided))
+    (ecl-pending-resolve ecl-org-run--id
+                         (list 'ecl-error 'denied "approval buffer killed"))))
+
+(defun ecl-org-run--discard (buffer)
+  "Kill BUFFER without answering -- the client is already gone."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer (setq ecl-org-run--decided t))
+    (kill-buffer buffer)))
+
+(defun ecl-org-run--buffers ()
+  "List of live review buffers still awaiting a decision."
+  (seq-filter (lambda (b)
+                (with-current-buffer b
+                  (and (derived-mode-p 'ecl-org-run-mode)
+                       ecl-org-run--id
+                       (not ecl-org-run--decided))))
+              (buffer-list)))
+
+(defun ecl-org-run-approve ()
+  "Run the block this buffer shows and hand the result to the ecl client."
+  (interactive)
+  (unless (derived-mode-p 'ecl-org-run-mode)
+    (user-error "Not an ecl org run buffer"))
+  (let ((id ecl-org-run--id)
+        (file ecl-org-run--file)
+        (name ecl-org-run--name))
+    (setq ecl-org-run--decided t)
+    (ecl-pending-resolve id (condition-case err
+                                (list 'ecl-ok (ecl-org--run-now file name))
+                              (error (list 'ecl-error 'error
+                                           (error-message-string err)))))
+    (kill-buffer)))
+
+(defun ecl-org-run-deny (reason)
+  "Deny this request with REASON, which is reported to the ecl client."
+  (interactive (list (read-string "Deny reason: ")))
+  (unless (derived-mode-p 'ecl-org-run-mode)
+    (user-error "Not an ecl org run buffer"))
+  (setq ecl-org-run--decided t)
+  (ecl-pending-resolve ecl-org-run--id
+                       (list 'ecl-error 'denied
+                             (if (string-blank-p reason)
+                                 "denied"
+                               (concat "denied: " (string-trim reason)))))
+  (kill-buffer))
 
 (defun ecl-org--goto-block (name file)
   "Move point to the babel src block named NAME (via #+name:) in FILE.
@@ -623,6 +840,15 @@ nothing, and a callee that is itself a call line is not followed."
           (ecl-org--check-private
            (format "the block '%s' that '%s' calls" callee name)))))))
 
+(defun ecl-org--element-text (el)
+  "The lines element EL occupies, without the blank lines Org counts in."
+  (buffer-substring-no-properties
+   (org-element-property :begin el)
+   (save-excursion
+     (goto-char (org-element-property :end el))
+     (skip-chars-backward " \t\n")
+     (line-end-position))))
+
 (defun ecl-org--block-body (el)
   "The body of src block EL, newline-terminated, as `ecl-org-block' hands it out."
   (let ((text (org-element-property :value el)))
@@ -644,12 +870,7 @@ business invalidating the write."
      (ecl-org--goto-block name file)
      (let* ((el (org-element-at-point))
             (text (if full
-                      (buffer-substring-no-properties
-                       (org-element-property :begin el)
-                       (save-excursion
-                         (goto-char (org-element-property :end el))
-                         (skip-chars-backward " \t\n")
-                         (line-end-position)))
+                      (ecl-org--element-text el)
                     (org-element-property :value el))))
        (unless (string-suffix-p "\n" text) (setq text (concat text "\n")))
        (if with-etag

@@ -242,6 +242,64 @@ expect_exit "run on a #+call: line exits 0" 0 $?
 run org block "$F" sum-call >/dev/null 2>&1
 expect_exit "block on a #+call: line exits 2" 2 $?
 
+# --- run policy: the gate in front of a block ---
+P="$WORK/policy.org"
+cat > "$P" <<'EOF'
+#+PROPERTY: ECL_RUN deny
+
+* Locked
+#+name: locked
+#+begin_src emacs-lisp
+"ran locked"
+#+end_src
+
+* Open
+:PROPERTIES:
+:ECL_RUN: ask
+:END:
+
+#+name: asked
+#+begin_src emacs-lisp
+"ran asked"
+#+end_src
+EOF
+
+run org run "$P" locked >/dev/null 2>&1
+expect_exit "run denied by ECL_RUN exits 2" 2 $?
+grep -q RESULTS "$P" && bad "denied run wrote results" \
+  || ok "denied run left the file alone"
+
+# Same stand-in for a human as the eval cases further down: wait for the
+# review buffer to appear, then decide in it over a second emacsclient.
+decide_run() {
+  local i=0
+  while [ $i -lt 100 ]; do
+    if [ "$(emacsclient -s "$SOCK" -e '(and (ecl-org-run--buffers) t)' 2>/dev/null)" = "t" ]; then
+      emacsclient -s "$SOCK" -e \
+        "(with-current-buffer (car (ecl-org-run--buffers)) $1)" >/dev/null 2>&1
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  echo "decide_run: no review buffer appeared"
+  return 1
+}
+
+run org run "$P" asked > "$WORK/ask.out" 2>"$WORK/ask.err" &
+pid=$!
+decide_run '(ecl-org-run-approve)'
+wait $pid; expect_exit "run approved exits 0" 0 $?
+grep -q 'ran asked' "$WORK/ask.out" \
+  && ok "approved run prints the result" || bad "approved run: $(cat "$WORK/ask.out")"
+grep -q 'waiting for approval' "$WORK/ask.err" \
+  && ok "run announces the wait on stderr" || bad "run wait notice missing"
+
+run org run "$P" asked >/dev/null 2>&1 &
+pid=$!
+decide_run '(ecl-org-run-deny "not now")'
+wait $pid; expect_exit "run denied in Emacs exits 3" 3 $?
+
 # --- status --note: the daemon-only logging path ---
 run org status --note "blocked on infra" "$F" Projects "Rate limiting" WAITING >/dev/null
 expect_exit "status --note on @ state" 0 $?

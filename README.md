@@ -27,9 +27,10 @@ instead of raw `emacsclient --eval`.
   exception: `blocks|block|set-block|run|tangle --block` address a
   `#+name:`, so one block can be rewritten without touching the prose
   around it. `run` takes a named `#+call:` line too — the body commands
-  do not, a call line having no body of its own. A heading tagged
-  `:noai:` is out of reach, and a command that replaces a whole region
-  wants an etag of it — both below.
+  do not, a call line having no body of its own — and what it may execute
+  is gated by `ecl-org-run-policy` and the `ECL_RUN` property. A heading
+  tagged `:noai:` is out of reach, and a command that replaces a whole
+  region wants an etag of it — all below.
 
 ## Wiring
 
@@ -91,6 +92,45 @@ which is what these commands read.
 
 This gates the sanctioned tool path, not the file. Anything that can run
 `cat` on the org file reads it regardless; for that, deny the file.
+
+## Blocks the agent may run
+
+`ecl org run NAME` executes a `#+name`d src block or `#+call:` line.
+Whether it may is `ecl-org-run-policy` — `allow` (the default), `ask` or
+`deny` — and a file overrides that per block with the `ECL_RUN` property,
+which is inherited, so the nearest one wins:
+
+```org
+#+PROPERTY: ECL_RUN ask         <- the whole file
+
+* Deploy
+:PROPERTIES:
+:ECL_RUN: deny                  <- this subtree
+:END:
+** Staging
+:PROPERTIES:
+:ECL_RUN: allow                 <- nearest wins
+:END:
+```
+
+```sh
+ecl org run ~/org/runfile.org deploy-prod
+# ecl: 'deploy-prod' in ~/org/runfile.org may not run: ECL_RUN says deny  (exit 2)
+```
+
+Under `ask` the block goes up in a read-only Emacs buffer — the block as it
+stands, and for a `#+call:` line the block it calls — with `C-c C-c` to run
+it and `C-c C-k` to deny with a reason. The client waits meanwhile, with no
+timeout, and exits 3 on a denial; killing the buffer denies too. What runs
+is the block **in the file**, resolved again on approval, so fixing it in
+org and then approving runs the fix.
+
+The two knobs compose from the other side as well: `(setq
+ecl-org-run-policy 'ask)` in your init, and `#+PROPERTY: ECL_RUN allow` on
+the files worth trusting. A call line answers for both ends — where it sits
+and the block it names — and the stricter of the two wins, so it is not a
+way around a subtree marked `deny`. A value that is not `allow`, `ask` or
+`deny` refuses rather than runs.
 
 ## Headings that are links
 

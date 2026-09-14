@@ -489,6 +489,190 @@ echo hi
       (should (string-search "noai" (cadr err))))
     (should-not (string-search "RESULTS" (ecl-org-test--file-string f)))))
 
+;;; run policy
+
+(defvar ecl-org-test--policy-fixture
+  "#+PROPERTY: ECL_RUN deny
+
+* Free
+:PROPERTIES:
+:ECL_RUN: allow
+:END:
+#+name: free
+#+begin_src emacs-lisp
+\"ran free\"
+#+end_src
+
+* Locked
+#+name: locked
+#+begin_src emacs-lisp
+\"ran locked\"
+#+end_src
+")
+
+(defmacro ecl-org-test--with-review (file name &rest body)
+  "Run NAME in FILE under `ask' and run BODY in the review buffer.
+Binds `id' to the pending request id.  The buffer is killed afterwards."
+  (declare (indent 2))
+  `(let ((ecl-org-run-policy 'ask)
+         (ecl--pending (make-hash-table :test 'equal)))
+     (pcase (ecl-org-run ,file ,name)
+       (`(ecl-pending ,id)
+        (let ((buffer (get-buffer (format "*ecl org run %s*" id))))
+          (should buffer)
+          (should (memq buffer (ecl-org-run--buffers)))
+          (unwind-protect
+              (with-current-buffer buffer ,@body)
+            (when (buffer-live-p buffer)
+              (with-current-buffer buffer (setq ecl-org-run--decided t))
+              (kill-buffer buffer)))))
+       (other (ert-fail (format "expected a pending request, got: %S" other))))))
+
+(ert-deftest ecl-org-test-run-allows-by-default ()
+  "The gate is opt-in: an unmarked block in an unconfigured daemon runs."
+  (should (eq ecl-org-run-policy 'allow))
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (should (equal (ecl-org-run f "greet") "hi world"))))
+
+(ert-deftest ecl-org-test-run-property-denies-a-whole-file ()
+  (ecl-org-test--with-content f ecl-org-test--policy-fixture
+    (let ((err (should-error (ecl-org-run f "locked"))))
+      (should (string-search "ECL_RUN" (cadr err)))
+      (should (string-search "deny" (cadr err))))
+    (should-not (string-search "RESULTS" (ecl-org-test--file-string f)))))
+
+(ert-deftest ecl-org-test-run-property-on-a-heading-beats-the-file ()
+  "The point of the nearest-wins rule: one open block in a closed file."
+  (ecl-org-test--with-content f ecl-org-test--policy-fixture
+    (should (equal (ecl-org-run f "free") "ran free"))))
+
+(ert-deftest ecl-org-test-run-policy-variable-denies ()
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (let* ((ecl-org-run-policy 'deny)
+           (err (should-error (ecl-org-run f "greet"))))
+      (should (string-search "ecl-org-run-policy" (cadr err))))
+    (should-not (string-search "RESULTS" (ecl-org-test--file-string f)))))
+
+(ert-deftest ecl-org-test-run-property-beats-the-policy-variable ()
+  "How the two compose: deny everything, then name what may run."
+  (ecl-org-test--with-content f "* Trusted
+:PROPERTIES:
+:ECL_RUN: allow
+:END:
+#+name: greet
+#+begin_src emacs-lisp
+\"hi\"
+#+end_src
+"
+    (let ((ecl-org-run-policy 'deny))
+      (should (equal (ecl-org-run f "greet") "hi")))))
+
+(ert-deftest ecl-org-test-run-unreadable-policy-fails-closed ()
+  (ecl-org-test--with-content f "* Typo
+:PROPERTIES:
+:ECL_RUN: alow
+:END:
+#+name: greet
+#+begin_src emacs-lisp
+\"hi\"
+#+end_src
+"
+    (let ((err (should-error (ecl-org-run f "greet"))))
+      (should (string-search "alow" (cadr err))))
+    (should-not (string-search "RESULTS" (ecl-org-test--file-string f)))))
+
+(ert-deftest ecl-org-test-run-call-line-takes-the-stricter-policy ()
+  "An allowed call site is otherwise a way past the heading that says deny."
+  (ecl-org-test--with-content f "* Open
+:PROPERTIES:
+:ECL_RUN: allow
+:END:
+#+name: locked-call
+#+call: locked()
+
+* Locked
+:PROPERTIES:
+:ECL_RUN: deny
+:END:
+#+name: locked
+#+begin_src emacs-lisp
+\"ran locked\"
+#+end_src
+"
+    (let ((err (should-error (ecl-org-run f "locked-call"))))
+      (should (string-search "locked" (cadr err)))
+      (should (string-search "deny" (cadr err))))
+    (should-not (string-search "RESULTS" (ecl-org-test--file-string f)))))
+
+(ert-deftest ecl-org-test-run-policy-comes-after-resolving-the-name ()
+  "A missing block is missing, not denied -- the caller has to hear which."
+  (ecl-org-test--with-content f ecl-org-test--policy-fixture
+    (let ((err (should-error (ecl-org-run f "nope"))))
+      (should (string-search "ecl org blocks" (cadr err))))))
+
+(ert-deftest ecl-org-test-run-ask-waits-then-runs-on-approval ()
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (ecl-org-test--with-review f "greet"
+      (should (string-search "(concat \"hi \" who)" (buffer-string)))
+      (should buffer-read-only)
+      (should (equal (ecl-poll id) nil))
+      (ecl-org-run-approve)
+      (should (equal (ecl-poll id) '(ecl-ok "hi world")))
+      ;; Answered once: the entry is gone.
+      (should (equal (ecl-poll id) nil)))
+    (should (string-search "#+RESULTS: greet\n: hi world"
+                           (ecl-org-test--file-string f)))))
+
+(ert-deftest ecl-org-test-run-ask-denied-leaves-the-file-alone ()
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (ecl-org-test--with-review f "greet"
+      (ecl-org-run-deny "not now")
+      (pcase (ecl-poll id)
+        (`(ecl-error denied ,msg) (should (string-search "not now" msg)))
+        (other (ert-fail (format "unexpected: %S" other)))))
+    (should-not (string-search "RESULTS" (ecl-org-test--file-string f)))))
+
+(ert-deftest ecl-org-test-run-ask-killed-buffer-denies ()
+  "Closing the window is how a waiting client gets dismissed."
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (ecl-org-test--with-review f "greet"
+      (kill-buffer)
+      (pcase (ecl-poll id)
+        (`(ecl-error denied ,_) (should t))
+        (other (ert-fail (format "unexpected: %S" other)))))
+    (should-not (string-search "RESULTS" (ecl-org-test--file-string f)))))
+
+(ert-deftest ecl-org-test-run-ask-runs-the-block-as-the-file-has-it ()
+  "The buffer is a copy to read; approval goes back to the file for the code."
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (ecl-org-test--with-review f "greet"
+      (ecl-org-set-block f "greet" "(concat \"bye \" who)\n"
+                         (ecl-org-test--block-etag f "greet"))
+      (ecl-org-run-approve)
+      (should (equal (ecl-poll id) '(ecl-ok "bye world"))))))
+
+(ert-deftest ecl-org-test-run-ask-shows-a-call-line-with-its-block ()
+  "A call line on its own says nothing about what it would run."
+  (ecl-org-test--with-content f ecl-org-test--run-fixture
+    (ecl-org-test--with-review f "greet-call"
+      (should (string-search "#+call: greet()" (buffer-string)))
+      (should (string-search "(concat \"hi \" who)" (buffer-string)))
+      (ecl-org-run-approve)
+      (should (equal (ecl-poll id) '(ecl-ok "hi drawer"))))))
+
+(ert-deftest ecl-org-test-run-ask-reports-an-error-from-the-block ()
+  (ecl-org-test--with-content f "* Broken
+#+name: boom
+#+begin_src emacs-lisp
+(error \"boom\")
+#+end_src
+"
+    (ecl-org-test--with-review f "boom"
+      (ecl-org-run-approve)
+      (pcase (ecl-poll id)
+        (`(ecl-error error ,msg) (should (string-search "boom" msg)))
+        (other (ert-fail (format "unexpected: %S" other)))))))
+
 ;;; create
 
 (ert-deftest ecl-org-test-create-new-leaf-with-metadata ()
