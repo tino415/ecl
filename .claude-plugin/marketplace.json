@@ -1,0 +1,27 @@
+{
+  "name": "ecl",
+  "owner": {
+    "name": "tino415"
+  },
+  "metadata": {
+    "description": "The ecl client, packaged for coding agents",
+    "version": "0.2.0"
+  },
+  "plugins": [
+    {
+      "name": "ecl",
+      "description": "Work with a running Emacs daemon from the shell through the ecl client; ask a given daemon what it publishes with 'ecl --help'",
+      "author": {
+        "name": "tino415"
+      },
+      "source": "./plugins/ecl",
+      "category": "productivity",
+      "tags": [
+        "emacs",
+        "org-mode",
+        "babel",
+        "shell"
+      ]
+    }
+  ]
+}
