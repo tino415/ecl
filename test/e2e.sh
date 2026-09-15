@@ -93,6 +93,7 @@ Prose after the block.
 * Sums
 :PROPERTIES:
 :header-args: :var n=4
+:ECL_RUN: allow
 :END:
 
 #+name: sum

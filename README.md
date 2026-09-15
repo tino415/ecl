@@ -96,22 +96,26 @@ This gates the sanctioned tool path, not the file. Anything that can run
 ## Blocks the agent may run
 
 `ecl org run NAME` executes a `#+name`d src block or `#+call:` line.
-Whether it may is `ecl-org-run-policy` — `allow` (the default), `ask` or
+Whether it may is `ecl-org-run-policy` — `ask` (the default), `allow` or
 `deny` — and a file overrides that per block with the `ECL_RUN` property,
 which is inherited, so the nearest one wins:
 
 ```org
-#+PROPERTY: ECL_RUN ask         <- the whole file
+#+PROPERTY: ECL_RUN allow       <- the whole file, a trusted runbook
 
 * Deploy
 :PROPERTIES:
-:ECL_RUN: deny                  <- this subtree
+:ECL_RUN: deny                  <- this subtree, never from a caller
 :END:
 ** Staging
 :PROPERTIES:
-:ECL_RUN: allow                 <- nearest wins
+:ECL_RUN: ask                   <- nearest wins
 :END:
 ```
+
+The default asks because a block nobody has spoken for is one an agent
+found in a file, not one a human pointed at. Marking the runbooks you
+drive unattended `allow` is what turns the asking off where you mean it.
 
 ```sh
 ecl org run ~/org/runfile.org deploy-prod
@@ -126,11 +130,12 @@ is the block **in the file**, resolved again on approval, so fixing it in
 org and then approving runs the fix.
 
 The two knobs compose from the other side as well: `(setq
-ecl-org-run-policy 'ask)` in your init, and `#+PROPERTY: ECL_RUN allow` on
-the files worth trusting. A call line answers for both ends — where it sits
-and the block it names — and the stricter of the two wins, so it is not a
-way around a subtree marked `deny`. A value that is not `allow`, `ask` or
-`deny` refuses rather than runs.
+ecl-org-run-policy 'allow)` in your init puts the old behaviour back, and
+`#+PROPERTY: ECL_RUN ask` then re-arms the files that deserve it. A call
+line answers for both ends — where it sits and the block it names — and the
+stricter of the two wins, so it is not a way around a subtree marked
+`deny`. A value that is not `allow`, `ask` or `deny` refuses rather than
+runs.
 
 ## Headings that are links
 

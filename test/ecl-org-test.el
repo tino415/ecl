@@ -434,25 +434,36 @@ echo hi
 #+call: nosuch()
 ")
 
+(defmacro ecl-org-test--allowed (&rest body)
+  "Run BODY with the gate open, for the tests that are about running.
+The default is `ask', which hands these a pending request where they
+want a result; what they pin is what happens once a block may run."
+  (declare (indent 0))
+  `(let ((ecl-org-run-policy 'allow)) ,@body))
+
 (ert-deftest ecl-org-test-run-executes-a-named-src-block ()
   (ecl-org-test--with-content f ecl-org-test--run-fixture
-    (should (equal (ecl-org-run f "greet") "hi world"))
+    (ecl-org-test--allowed
+      (should (equal (ecl-org-run f "greet") "hi world")))
     (should (string-search "#+RESULTS: greet\n: hi world"
                            (ecl-org-test--file-string f)))))
 
 (ert-deftest ecl-org-test-run-executes-a-named-call-line ()
   (ecl-org-test--with-content f ecl-org-test--run-fixture
-    (should (equal (ecl-org-run f "greet-call") "hi drawer"))
+    (ecl-org-test--allowed
+      (should (equal (ecl-org-run f "greet-call") "hi drawer")))
     (should (string-search "#+RESULTS: greet-call\n: hi drawer"
                            (ecl-org-test--file-string f)))))
 
 (ert-deftest ecl-org-test-run-call-line-takes-the-call-site-header-args ()
   "The reason a call line has to be runnable at all: it is not the block."
   (ecl-org-test--with-content f ecl-org-test--run-fixture
-    (should (equal (ecl-org-run f "greet") "hi world"))
-    (should (equal (ecl-org-run f "greet-call") "hi drawer"))))
+    (ecl-org-test--allowed
+      (should (equal (ecl-org-run f "greet") "hi world"))
+      (should (equal (ecl-org-run f "greet-call") "hi drawer")))))
 
 (ert-deftest ecl-org-test-run-unknown-name-errors ()
+  "No policy is consulted: the name is resolved first, and there is none."
   (ecl-org-test--with-content f ecl-org-test--run-fixture
     (let ((err (should-error (ecl-org-run f "nope"))))
       (should (string-search "ecl org blocks" (cadr err))))))
@@ -460,8 +471,9 @@ echo hi
 (ert-deftest ecl-org-test-run-call-line-to-a-missing-block-errors ()
   "Nil info would send `org-babel-execute-src-block' at whatever is at point."
   (ecl-org-test--with-content f ecl-org-test--run-fixture
-    (let ((err (should-error (ecl-org-run f "dangling-call"))))
-      (should (string-search "nosuch" (cadr err))))))
+    (ecl-org-test--allowed
+      (let ((err (should-error (ecl-org-run f "dangling-call"))))
+        (should (string-search "nosuch" (cadr err)))))))
 
 (ert-deftest ecl-org-test-body-commands-name-a-call-line ()
   "`ecl org blocks' lists it, so denying it exists is the wrong answer."
@@ -528,11 +540,31 @@ Binds `id' to the pending request id.  The buffer is killed afterwards."
               (kill-buffer buffer)))))
        (other (ert-fail (format "expected a pending request, got: %S" other))))))
 
-(ert-deftest ecl-org-test-run-allows-by-default ()
-  "The gate is opt-in: an unmarked block in an unconfigured daemon runs."
-  (should (eq ecl-org-run-policy 'allow))
-  (ecl-org-test--with-content f ecl-org-test--run-fixture
-    (should (equal (ecl-org-run f "greet") "hi world"))))
+(ert-deftest ecl-org-test-run-asks-by-default ()
+  "A block no file speaks for stops for a human rather than running."
+  (should (eq ecl-org-run-policy 'ask))
+  (let ((ecl--pending (make-hash-table :test 'equal)))
+    (ecl-org-test--with-content f ecl-org-test--run-fixture
+      (pcase (ecl-org-run f "greet")
+        (`(ecl-pending ,id)
+         (let ((buffer (get-buffer (format "*ecl org run %s*" id))))
+           (should buffer)
+           (with-current-buffer buffer (setq ecl-org-run--decided t))
+           (kill-buffer buffer)))
+        (other (ert-fail (format "expected a pending request, got: %S" other))))
+      (should-not (string-search "RESULTS" (ecl-org-test--file-string f))))))
+
+(ert-deftest ecl-org-test-run-property-allows-what-the-default-would-ask ()
+  "The lever a trusted runbook pulls for itself."
+  (ecl-org-test--with-content f "#+PROPERTY: ECL_RUN allow
+
+* Trusted
+#+name: greet
+#+begin_src emacs-lisp
+\"hi\"
+#+end_src
+"
+    (should (equal (ecl-org-run f "greet") "hi"))))
 
 (ert-deftest ecl-org-test-run-property-denies-a-whole-file ()
   (ecl-org-test--with-content f ecl-org-test--policy-fixture

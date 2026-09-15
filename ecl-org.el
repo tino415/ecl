@@ -39,11 +39,12 @@
 ;; body commands -- block, set-block, tangle --block -- want a src
 ;; block, a call line having no body of its own.
 ;;
-;; Running one is gated by `ecl-org-run-policy' -- allow (the default),
-;; ask, or deny -- which a file overrides through the ECL_RUN property:
-;; on a heading it covers that subtree, as `#+PROPERTY: ECL_RUN ask' it
+;; Running one is gated by `ecl-org-run-policy' -- ask (the default),
+;; allow, or deny -- which a file overrides through the ECL_RUN property:
+;; on a heading it covers that subtree, as `#+PROPERTY: ECL_RUN allow' it
 ;; covers the file, and the nearest one wins.  Under `ask' the block goes
-;; up in an Emacs buffer and the caller waits for a human.
+;; up in an Emacs buffer and the caller waits for a human, so a file that
+;; agents run unattended says `allow' for itself.
 ;;
 ;; The four commands that replace a whole region blind -- create with a
 ;; body, set-block, delete, refile -- take an etag of that region via
@@ -541,11 +542,13 @@ CONTENT should include its own leading newline.  Saves via `ecl-org--save'."
     (ecl-org--save))
   nil)
 
-(defvar ecl-org-run-policy 'allow
+(defvar ecl-org-run-policy 'ask
   "What `ecl org run' does with a block no file speaks for.
-`allow' runs it, `ask' puts it to a human in Emacs, `deny' refuses.  A
-file overrides this per block through `ecl-org-run-property', so the two
-compose: set this to `ask' or `deny' and mark the files worth trusting.")
+`allow' runs it, `ask' puts it to a human in Emacs, `deny' refuses.  The
+default asks, because a block nobody has spoken for is one an agent found
+in a file rather than one a human pointed at.  A file lifts that per
+block through `ecl-org-run-property': mark the runbooks worth trusting
+`allow', and only the unvouched-for blocks stop for a human.")
 
 (defconst ecl-org-run-property "ECL_RUN"
   "Org property naming the policy for the blocks it covers.
