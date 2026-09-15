@@ -63,7 +63,8 @@ Text edits touch a section's **content**: from after the heading line (planning 
 - `section [--subtree] [--with-etag] FILE SEG...` -- the content region, or the whole subtree with `--subtree`. Always ends in a newline.
 - `blocks FILE` -- the **named** src blocks and `#+call:` lines: NAME, LANG (`call:CALLEE` for a call line), and the resolved `:tangle` target or `-`. Anonymous blocks are omitted; they cannot be addressed.
 - `block [--full] [--with-etag] FILE NAME` -- a block's body as babel sees it (comma escapes removed); `--full` gives the `#+name:` line, header args and both fences instead.
-- `properties`, `property-get [--inherit]`, `effort-get [--inherit]`, `attachments`, `attach-dir`, `id`, `filetags`, `todo-keywords`, `agenda-files`, `private-tags` -- one value or list each. `attach-dir` neither creates the directory nor mints an ID; `id` without `--create` never writes.
+- `properties`, `property-get [--inherit]`, `effort-get [--inherit]`, `attachments`, `attach-dir`, `id`, `filetags`, `todo-keywords`, `agenda-files`, `private-tags` -- one value or list each. `attach-dir` neither creates the directory nor mints an ID; `id` without `--create` never writes; `attachments` skips `~` backups.
+  - `properties` lists the heading's **own** drawer, names upper-cased (Org normalises them; lookup is case-insensitive) and inherited values excluded. A property whose name collides with an Org *special* property -- `Priority`, `Todo`, `Deadline` -- never appears in that listing even though `property-get NAME` reads it. Do not conclude from an absent line that the property is unset.
 
 **Text edits** -- content only, each saves the file:
 
@@ -90,10 +91,10 @@ EOF
 - `refile [--to SEG]... [--to-id ID] [--to-file DEST] [--if-match ETAG] FILE SEG...` -- the scripted `C-c C-w`. One `--to` per outline level; none at all means the top level of the destination file. Level adapts; drawers, logbook and children move intact. Refiling a heading into its own subtree errors.
 - `status [--note NOTE] FILE SEG... STATE` -- a logged TODO transition, honouring the file's `#+TODO:` flags. A state flagged `@` (`WAITING(w@)`, `CANCELLED(c@)`) **requires** `--note`; without one it errors and changes nothing.
 - `note FILE SEG... NOTE` -- a timestamped `:LOGBOOK:` note with no state change, as `C-c C-z` would file it. NOTE is one quoted argument, not stdin.
-- `effort`, `property`, `set-filetags`, `set-todo-keywords` -- one scalar each, on the exact heading (no inheritance); an empty value clears it.
-- `attach FILE SEG... SOURCE` -- copies SOURCE into the heading's attachment dir, tags it `:ATTACH:`, mints an `:ID:` if it has none, prints the directory.
+- `effort`, `property`, `set-filetags`, `set-todo-keywords` -- one scalar each, on the exact heading (no inheritance); an empty value clears it. `set-todo-keywords` does **not** rewrite existing headings: a heading whose keyword the new spec no longer defines has that word fold into its title, silently and file-wide. Read the old spec with `todo-keywords` and check what is in use before narrowing it.
+- `attach FILE SEG... SOURCE` -- copies SOURCE into the heading's attachment dir (a copy: the source file stays where it is), tags it `:ATTACH:`, mints an `:ID:` if it has none, prints the directory.
 
-**Babel** -- `run FILE NAME` (see *The run gate*) and `tangle [--block NAME] FILE [SEG...]`, which writes the `:tangle` targets and prints the paths. Tangling evaluates nothing and writes no `#+RESULTS:`; blocks without a `:tangle <file>` header are skipped, and no scope means the whole file.
+**Babel** -- `run FILE NAME` (see *The run gate*) and `tangle [--block NAME] FILE [SEG...]`, which writes the `:tangle` targets and prints the paths. Tangling evaluates nothing and writes no `#+RESULTS:`; blocks without a `:tangle <file>` header are skipped, and no scope means the whole file. A relative `:tangle` path resolves against **the org file's own directory**, not the caller's cwd -- so the same block tangles to the same place wherever you run it from.
 
 Reordering siblings under one parent is deliberately absent. That is a job for Emacs.
 
