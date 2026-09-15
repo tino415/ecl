@@ -1,0 +1,12 @@
+{
+  "name": "ecl",
+  "version": "0.2.0",
+  "description": "Work with a running Emacs daemon from the shell through the ecl client; ask a given daemon what it publishes with 'ecl --help'",
+  "author": {
+    "name": "tino415"
+  },
+  "homepage": "https://github.com/tino415/ecl",
+  "repository": "https://github.com/tino415/ecl",
+  "keywords": [],
+  "skills": "./skills/"
+}
