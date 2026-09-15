@@ -1,0 +1,10 @@
+{
+  "name": "ecl",
+  "version": "0.2.0",
+  "description": "Drive a running Emacs daemon from the shell: org files addressed by heading path or :ID:, babel blocks by #+name:, edits scoped to a section",
+  "author": {
+    "name": "tino415"
+  },
+  "homepage": "https://github.com/tino415/ecl",
+  "repository": "https://github.com/tino415/ecl"
+}

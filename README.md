@@ -411,6 +411,24 @@ A handle is all these commands take, and handles only name jobs that
 for the rest of the session. A job is held until its buffer is killed,
 and `ecl shell list` is what is still there.
 
+## The skill
+
+`plugins/ecl/skills/ecl/SKILL.md` teaches a coding agent this command
+surface — heading addressing, the etag reads, which verb edits what, and
+the run gate. The repo doubles as a Claude Code marketplace, so it
+installs and updates on its own, independent of how the elisp and the
+client got here:
+
+```sh
+claude plugin marketplace add tino415/ecl
+claude plugin install ecl@ecl
+claude plugin marketplace update ecl   # later, to pull a newer skill
+```
+
+It documents `ecl org`, which is the group an agent works in; `eval`,
+`shell` and `browse-url` are gated on a human and want no agent-facing
+doc of their own.
+
 ## Tests
 
 All test entry points are Makefile file targets — run these, nothing else:
