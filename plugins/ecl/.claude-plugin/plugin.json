@@ -1,7 +1,7 @@
 {
   "name": "ecl",
   "version": "0.2.0",
-  "description": "Drive a running Emacs daemon from the shell: org files addressed by heading path or :ID:, babel blocks by #+name:, plus elisp, shell commands and browse-url gated on a human approving them in Emacs",
+  "description": "Work with a running Emacs daemon from the shell through the ecl client; ask a given daemon what it publishes with 'ecl --help'",
   "author": {
     "name": "tino415"
   },

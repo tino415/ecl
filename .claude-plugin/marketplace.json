@@ -4,13 +4,13 @@
     "name": "tino415"
   },
   "metadata": {
-    "description": "The ecl client, packaged for coding agents: org file editing, and the human-gated way into a running Emacs",
+    "description": "The ecl client, packaged for coding agents",
     "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "ecl",
-      "description": "Drive a running Emacs daemon from the shell: org files addressed by heading path or :ID:, babel blocks by #+name:, plus elisp, shell commands and browse-url gated on a human approving them in Emacs",
+      "description": "Work with a running Emacs daemon from the shell through the ecl client; ask a given daemon what it publishes with 'ecl --help'",
       "author": {
         "name": "tino415"
       },

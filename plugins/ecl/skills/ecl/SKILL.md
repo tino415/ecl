@@ -1,6 +1,6 @@
 ---
 name: ecl
-description: Reach a running Emacs daemon from the shell with the `ecl` client -- read and edit org files by heading path or :ID: instead of slurping them, edit or run a single babel block, and ask the user to approve elisp (`ecl eval`), a command in their Emacs (`ecl shell run`) or a page to open (`ecl browse-url`). Auto-triggers on org-mode files, "project notes", "single file workflow", any reading/writing of org headings, sections or outlines, and on evaluating elisp or running something the user should watch in Emacs.
+description: Work with a running Emacs daemon from the shell through the `ecl` client -- org files addressed by heading instead of slurped, and whatever else that daemon publishes (`ecl --help`). Auto-triggers on org-mode files, "project notes", "single file workflow", any reading/writing of org headings, sections or outlines, and when the user wants elisp evaluated, something changed in their running Emacs, or a command run where they can watch it.
 ---
 
 # ecl: a curated surface into a running Emacs daemon
