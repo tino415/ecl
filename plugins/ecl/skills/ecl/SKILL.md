@@ -1,15 +1,16 @@
 ---
 name: ecl
-description: Read and edit org files through a running Emacs daemon with the `ecl org` client -- address a heading by path or by :ID: instead of slurping the file, edit a section or one babel block, run or tangle a block. Auto-triggers on org-mode files, "project notes", "single file workflow", or any reading/writing of org headings, sections, or outlines.
+description: Reach a running Emacs daemon from the shell with the `ecl` client -- read and edit org files by heading path or :ID: instead of slurping them, edit or run a single babel block, and ask the user to approve elisp (`ecl eval`), a command in their Emacs (`ecl shell run`) or a page to open (`ecl browse-url`). Auto-triggers on org-mode files, "project notes", "single file workflow", any reading/writing of org headings, sections or outlines, and on evaluating elisp or running something the user should watch in Emacs.
 ---
 
-# ecl: org files through the Emacs daemon
+# ecl: a curated surface into a running Emacs daemon
 
-Use the `ecl org` subcommands to work with org files used as single-file project documents (typically under `~/org/<project>/main.org`). They go through the running Emacs daemon (`ecl` forwards to allowlisted functions via `server-eval-at`), so they see the same buffer state the user sees.
+`ecl` forwards a shell call to a running Emacs daemon over `server-eval-at`, reaching only the commands that daemon publishes. Two halves:
 
-This covers the `org` group, which is the one an agent lives in. The client has others -- `eval` runs elisp in the daemon, `shell run` runs a command in your folder, `browse-url` opens a page -- each gated on a human approving it in Emacs, and each self-documenting. Emacs buffer *output* (compilation, dev server logs) is a separate concern from org file content, and often a separate skill on the machine you are on.
+- **`ecl org`** -- org files as single-file project documents (typically `~/org/<project>/main.org`), addressed by heading. Ungated: these read and edit files, and this skill is mostly about them. They see the same buffer state the user sees.
+- **`ecl eval`, `ecl shell`, `ecl browse-url`** -- the daemon itself, each gated on a human approving it in Emacs. See *The other groups* near the end.
 
-Every command is self-documenting: `ecl --help` lists the groups, `ecl org --help` lists these, `ecl org <cmd> --help` shows usage.
+`ECL_SERVER` picks the daemon (default `server`). Every command is self-documenting: `ecl --help` lists the groups, `ecl org --help` lists the org verbs, `ecl org <cmd> --help` shows usage.
 
 ## When to Use
 
@@ -18,6 +19,9 @@ Auto-trigger when the user:
 - Asks about a heading, section, or subtree inside an org file
 - Asks to add analysis, notes, or generated content under an existing heading
 - References the "single file project doc" workflow
+- Wants elisp evaluated, or something read or changed in their running Emacs
+- Wants a command run where they can watch it, rather than in your own shell
+- Wants a page opened in their browser
 
 ## Heading Path Convention
 
@@ -511,6 +515,26 @@ ecl org set-todo-keywords ~/org/ai.org 'TODO(t!) NEXT(n@) | DONE(d!) CANCELED(c@
 ```
 
 Note: changing the keyword set does not rewrite existing headings -- a heading whose old keyword is no longer defined will have that word fold into its title.
+
+## The other groups: eval, shell, browse-url
+
+Everything above is the `org` group. The rest of the client reaches the daemon itself, and every one of them is **gated on a human in Emacs** -- they are how you ask for something you cannot do from your own shell, not a faster way to do what you already can.
+
+```bash
+ecl eval '(emacs-version)'            # or pipe the code in
+printf 'mix test --only integration' | ecl shell run
+ecl browse-url https://example.com
+```
+
+- **`ecl eval [CODE...]`** evaluates elisp *in the running daemon* -- the user's live Emacs, with their buffers, their config and their state. The code goes up in an editable buffer; `C-c C-c` evaluates **the buffer as it stands**, so what runs may be the user's fixed version of what you sent. Prints the value, then a `--- messages ---` section with anything the code printed. This is the tool for reading or driving Emacs itself; it is not a general elisp runtime.
+- **`ecl shell run [COMMAND...]`** runs a command in **your** working directory, after the same approval, and answers with a *handle* rather than output: the command runs in a compilation buffer the user can watch. Read it back with `ecl shell wait HANDLE` (blocks until it exits; exit 2 if the command failed), `ecl shell output HANDLE [--from N]` to tail it without waiting, `ecl shell list`, `ecl shell kill HANDLE`. Reach for it when the user should *see* the run -- a long build, a dev server, a test suite they are watching -- not for ordinary shell work you can do yourself.
+- **`ecl browse-url URL`** opens a page through the daemon's browser after a `y-or-n-p` in Emacs. Needs a scheme. This one times out (60s) and denies.
+
+What to expect as a caller:
+
+- The call **blocks with no timeout** (`browse-url` excepted), printing `waiting for approval in Emacs` on stderr. Nobody at the keyboard means it waits indefinitely -- say you are about to do it rather than leaving the user to find a stalled call, and do not fire one into a background pipeline.
+- **Exit 3 is a denial**, with the user's reason on stderr. It is not an error to retry: take the reason as the answer. Exit 2 is a real failure, 4 an unknown command, 64 usage.
+- Killing the client cancels the request and tears the approval buffer down, so an abandoned call leaves nothing behind in the user's Emacs.
 
 ## Workflow
 

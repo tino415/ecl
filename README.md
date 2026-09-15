@@ -425,9 +425,9 @@ claude plugin install ecl@ecl
 claude plugin marketplace update ecl   # later, to pull a newer skill
 ```
 
-It documents `ecl org`, which is the group an agent works in; `eval`,
-`shell` and `browse-url` are gated on a human and want no agent-facing
-doc of their own.
+Most of it is `ecl org`, which is where an agent works; a closing section
+covers `eval`, `shell` and `browse-url` — what they are for, and what a
+caller should expect from a call that waits on a human with no timeout.
 
 ## Tests
 
