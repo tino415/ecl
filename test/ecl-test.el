@@ -23,6 +23,10 @@
              :fn ,(lambda () "Return stdin." ecl-stdin))
             ("maybe" :stdin optional
              :fn ,(lambda () "Return stdin length." (number-to-string (length ecl-stdin))))
+            ("carry" :stdin ,(lambda (args) (unless args 'optional))
+             :fn ,(lambda (&rest args)
+                    "Return the arguments, or stdin when there are none."
+                    (if args (string-join args " ") ecl-stdin)))
             ("ask" . ,(lambda ()
                         "Wait for a human."
                         (ecl-pending-start (lambda (_id) #'ignore))))
@@ -153,6 +157,28 @@
    (should (equal (ecl-dispatch '("maybe")) '(ecl-need-stdin)))
    (should (equal (ecl-dispatch '("maybe") "") '(ecl-ok "0")))
    (should (equal (ecl-dispatch '("maybe") "ab") '(ecl-ok "2")))))
+
+(ert-deftest ecl-test-stdin-predicate-declines-when-args-carry-input ()
+  "Arguments that already hold the input must not send the client to stdin.
+The read is not free: it blocks on an open descriptor, fails outright on
+one that cannot be opened, and in a pipeline hands over data meant for
+somebody else."
+  (ecl-test--with-table
+   (should (equal (ecl-dispatch '("carry" "hello")) '(ecl-ok "hello")))
+   (should (equal (ecl-dispatch '("carry" "a" "b")) '(ecl-ok "a b")))))
+
+(ert-deftest ecl-test-stdin-predicate-asks-when-args-do-not ()
+  (ecl-test--with-table
+   (should (equal (ecl-dispatch '("carry")) '(ecl-need-stdin)))
+   (should (equal (ecl-dispatch '("carry") "piped") '(ecl-ok "piped")))
+   (should (equal (ecl-dispatch '("carry") "") '(ecl-ok "")))))
+
+(ert-deftest ecl-test-stdin-predicate-help-says-it-depends ()
+  (ecl-test--with-table
+   (pcase (ecl-dispatch '("carry" "--help"))
+     (`(ecl-help ,text)
+      (should (string-match-p "unless its arguments carry it" text)))
+     (other (ert-fail (format "unexpected: %S" other))))))
 
 ;;; Confirm
 

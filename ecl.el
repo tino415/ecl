@@ -44,6 +44,10 @@
 ;; with :stdin 'optional empty input is allowed and reaches the
 ;; command as "").  Commands without the flag never make the client
 ;; touch stdin, so they cannot block on an open-but-silent descriptor.
+;; :stdin may also be a function of the command's argument list,
+;; answering nil, t or `optional' for that call: a command whose
+;; arguments already carry its input declines the read rather than
+;; having the client make it and then ignoring what came back.
 ;; `ecl-directory' carries the client's working directory for
 ;; resolving relative file arguments.
 ;;
@@ -147,6 +151,10 @@ Returns ENTRY."
             (pcase (plist-get plist :stdin)
               ('nil "")
               ('optional "optionally reads input from stdin\n")
+              ;; Help is per-command, so there are no arguments to
+              ;; resolve a predicate against -- say what it depends on.
+              ((pred functionp)
+               "reads input from stdin unless its arguments carry it\n")
               (_ "reads its input from stdin\n"))
             (if confirm "asks for confirmation in Emacs before running\n" "")
             "\n" (ecl--doc plist) "\n")))
@@ -259,21 +267,31 @@ ignored."
              ((symbol-function 'yes-or-no-p) #'ecl--prompt-trap))
      ,@body))
 
+(defun ecl--stdin-flag (plist args)
+  "Whether this command wants stdin for ARGS: nil, t or `optional'.
+A :stdin of either symbol answers for every call.  A function is asked,
+with ARGS, so a command whose arguments already carry its input can
+decline the read instead of having the client make it -- the client
+cannot know, and what it reads there is somebody else's data."
+  (let ((spec (plist-get plist :stdin)))
+    (if (functionp spec) (funcall spec args) spec)))
+
 (defun ecl--run (plist args path confirm)
   (if (member "--help" args)
       (list 'ecl-help (ecl--command-help plist path confirm))
     (let* ((fn (plist-get plist :fn))
            (arity (func-arity fn))
-           (n (length args)))
+           (n (length args))
+           (stdin (ecl--stdin-flag plist args)))
       (cond
        ((or (< n (car arity))
             (and (numberp (cdr arity)) (> n (cdr arity))))
         (list 'ecl-error 'usage (ecl--command-help plist path confirm)))
        ;; Ask the client for stdin before confirming, so a confirmed
        ;; command is only ever confirmed once (on the re-dispatch).
-       ((and (plist-get plist :stdin) (null ecl-stdin))
+       ((and stdin (null ecl-stdin))
         (list 'ecl-need-stdin))
-       ((and (eq (plist-get plist :stdin) t) (string-empty-p ecl-stdin))
+       ((and (eq stdin t) (string-empty-p ecl-stdin))
         (list 'ecl-error 'usage (ecl--command-help plist path confirm)))
        (t
         (when confirm (ecl--confirm path args))
