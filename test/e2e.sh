@@ -18,6 +18,7 @@ FAIL=0
 
 ok()  { PASS=$((PASS + 1)); echo "PASS: $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "FAIL: $1"; }
+skip() { echo "SKIP: $1"; }
 
 # desc, expected-exit, actual-exit
 expect_exit() {
@@ -157,6 +158,31 @@ EOF
 expect_exit "append body text" 0 $?
 printf '\n*** Sneaky\n' | run org append "$F" Notes >/dev/null 2>&1
 expect_exit "append heading payload exits 2" 2 $?
+
+# --- stdin that cannot be opened reads as empty, not as a crash ---
+# /dev/stdin is /proc/self/fd/0, and opening that fails outright when fd
+# 0 is a socket -- which is what an agent harness hands its children.
+# The answer must be the usage line naming stdin, not `emacs --script''s
+# backtrace: that ends on a frame printing our argv, and so the very
+# text being sent, back at the caller.
+if command -v socat >/dev/null 2>&1; then
+  cat > "$WORK/socket-stdin.sh" <<SH
+#!/usr/bin/env bash
+export ECL_SERVER="$SOCK"
+"$ECL" org append "$F" Notes 2>&1
+echo "EXIT=\$?"
+SH
+  chmod +x "$WORK/socket-stdin.sh"
+  out=$(timeout 20 socat STDIO SYSTEM:"$WORK/socket-stdin.sh" 2>/dev/null)
+  echo "$out" | grep -q "EXIT=64" \
+    && ok "socket stdin exits 64 (usage)" || bad "socket stdin exit: $out"
+  echo "$out" | grep -q "reads its input from stdin" \
+    && ok "socket stdin names stdin" || bad "socket stdin message: $out"
+  echo "$out" | grep -qi "backtrace\|command-line-1" \
+    && bad "socket stdin leaked a backtrace" || ok "socket stdin: no backtrace"
+else
+  skip "socket stdin needs socat"
+fi
 
 # --- replace: pair applies; failed pair leaves file byte-identical ---
 out=$(run org replace "$F" Notes <<'EOF'

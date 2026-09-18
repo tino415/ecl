@@ -15,8 +15,8 @@
 ;; the daemon stays free and we poll `ecl-poll' until it is decided,
 ;; with no timeout.  If we are killed while waiting, `ecl-cancel' tears
 ;; the daemon-side UI down.
-;; Exit codes: 0 ok, 2 daemon unreachable or command error,
-;; 3 user denied in Emacs, 4 unknown command, 64 usage.
+;; Exit codes: 0 ok, 2 daemon unreachable, command error or a fault
+;; here, 3 user denied in Emacs, 4 unknown command, 64 usage.
 
 (require 'server)
 (require 'seq)
@@ -66,27 +66,46 @@ something, which is what every pending request once was."
 
 (defun ecl-read-stdin ()
   ;; Blocks until the pipe/heredoc closes -- same contract as `cat`.
+  ;; Stdin we cannot open reads as empty instead of signalling:
+  ;; /dev/stdin is /proc/self/fd/0, and opening that fails outright when
+  ;; fd 0 is a socket, which is what a caller spawned by an agent
+  ;; harness often hands us.  Whether the input was needed is the
+  ;; command's to say -- :stdin t answers with the usage line naming
+  ;; stdin, :stdin optional falls through to its arguments -- and either
+  ;; beats dying on the way to asking.
   (with-temp-buffer
     (let ((coding-system-for-read 'utf-8-unix))
-      (call-process "cat" "/dev/stdin" t))
+      (ignore-error file-error (call-process "cat" "/dev/stdin" t)))
     (buffer-string)))
 
-(let ((result (ecl-call nil)))
-  (when (equal result '(ecl-need-stdin))
-    (setq result (ecl-call (ecl-read-stdin))))
-  (when (eq (car-safe result) 'ecl-pending)
-    (setq result (ecl-wait (cadr result) (nth 2 result))))
-  (pcase result
-    ;; Exit explicitly on success too: falling off the script would let
-    ;; emacs resume option processing on whatever is left in argv.
-    (`(ecl-ok ,value) (ecl-print value) (kill-emacs 0))
-    (`(ecl-help ,text) (princ text) (kill-emacs 0))
-    (`(ecl-error usage ,text) (message "%s" text) (kill-emacs 64))
-    (`(ecl-error denied ,msg) (message "ecl: %s" msg) (kill-emacs 3))
-    (`(ecl-error unknown ,msg) (message "ecl: %s" msg) (kill-emacs 4))
-    (`(ecl-error connect ,msg)
-     (message "ecl: cannot reach the Emacs daemon (%s)" msg)
-     (message "ecl: is the daemon up and ecl.el loaded? (require 'ecl)")
-     (kill-emacs 2))
-    (`(ecl-error ,_ ,msg) (message "ecl: %s" msg) (kill-emacs 2))
-    (other (message "ecl: unexpected reply: %S" other) (kill-emacs 2))))
+(defun ecl-main ()
+  (let ((result (ecl-call nil)))
+    (when (equal result '(ecl-need-stdin))
+      (setq result (ecl-call (ecl-read-stdin))))
+    (when (eq (car-safe result) 'ecl-pending)
+      (setq result (ecl-wait (cadr result) (nth 2 result))))
+    (pcase result
+      ;; Exit explicitly on success too: falling off the script would let
+      ;; emacs resume option processing on whatever is left in argv.
+      (`(ecl-ok ,value) (ecl-print value) (kill-emacs 0))
+      (`(ecl-help ,text) (princ text) (kill-emacs 0))
+      (`(ecl-error usage ,text) (message "%s" text) (kill-emacs 64))
+      (`(ecl-error denied ,msg) (message "ecl: %s" msg) (kill-emacs 3))
+      (`(ecl-error unknown ,msg) (message "ecl: %s" msg) (kill-emacs 4))
+      (`(ecl-error connect ,msg)
+       (message "ecl: cannot reach the Emacs daemon (%s)" msg)
+       (message "ecl: is the daemon up and ecl.el loaded? (require 'ecl)")
+       (kill-emacs 2))
+      (`(ecl-error ,_ ,msg) (message "ecl: %s" msg) (kill-emacs 2))
+      (other (message "ecl: unexpected reply: %S" other) (kill-emacs 2)))))
+
+;; Nothing here may reach `emacs --script''s own error printer.  A
+;; backtrace tells a caller nothing it can act on, and the frame it ends
+;; on prints our argv -- the very text being sent -- back at them, which
+;; buries the one line that says what went wrong.
+(setq backtrace-on-error-noninteractive nil)
+
+(condition-case err
+    (ecl-main)
+  (error (message "ecl: %s" (error-message-string err))
+         (kill-emacs 2)))
